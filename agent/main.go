@@ -270,11 +270,33 @@ func main() {
 					"--restart", "unless-stopped",
 					"linuxserver/code-server")
 
-			case "ollama":
+			case "ai-assistant":
+				log.Println("🧠 Rozpoczynam instalację AI Assistant (Ollama + Open WebUI)...")
+
+				// Używamy obrazu All-in-One.
+				// Port 3000: Interfejs WWW dla Ciebie
+				// Port 11434: API Ollamy (pod automatyzacje w tle)
 				cmd = exec.Command("docker", "run", "-d",
-					"--name=app-ollama",
-					"-p", "11434:11434", "-v", "ollama:/root/.ollama", "--restart", "unless-stopped",
-					"ollama/ollama")
+					"--name=app-ai-assistant",
+					"--gpus", "all",
+					"-p", "3000:8080",
+					"-p", "11434:11434",
+					"-v", "open-webui-data:/app/backend/data",
+					"-v", "ollama-data:/root/.ollama",
+					"--restart", "unless-stopped",
+					"ghcr.io/open-webui/open-webui:ollama")
+
+			case "whisper-asr":
+				log.Println("🎙️ Rozpoczynam instalację Whisper AI (Transkrypcja Audio na GPU)...")
+				cmd = exec.Command("docker", "run", "-d",
+					"--name=app-whisper-asr",
+					"--gpus", "all", // <--- 1. DAJEMY DOSTĘP DO KARTY RTX
+					"-p", "9000:9000",
+					"-e", "ASR_MODEL=medium", // <--- 2. WYBIERAMY MODEL (small lub medium)
+					"-e", "ASR_ENGINE=openai_whisper",
+					"--restart", "unless-stopped",
+					"onerahmet/openai-whisper-asr-webservice:latest-gpu") // <--- 3. UŻYWAMY WERSJI OBRAZU Z OBSŁUGĄ KART GRAFICZNYCH
+
 			default:
 				http.Error(w, "Nieznana aplikacja", http.StatusBadRequest)
 				return
