@@ -4,7 +4,7 @@ import { motion } from 'framer-motion';
 import axios from 'axios';
 import {
     ArrowLeft, Activity, Box, Terminal, ShoppingCart,
-    Settings, Code, Brain, Server, Power, Play, Square
+    Settings, Code, Brain, Server, Power, Play, Square, Mic
 } from 'lucide-react';
 
 const API_BASE = `http://${window.location.hostname}:8000`;
@@ -22,12 +22,12 @@ function MachineDetails() {
             // Pobieramy pełne dane konkretnej maszyny (zawiera też wysłane przez Agenta metryki i dockery)
             const res = await axios.get(`${API_BASE}/machines/${mac}`);
             const currentMachine = res.data;
-            
+
             setMachine(currentMachine);
-            
+
             // Bezpieczne przypisanie listy kontenerów (jeśli Agent ich jeszcze nie wysłał, dajemy pustą tablicę)
             setDockers(currentMachine?.dockers || []);
-            
+
         } catch (err) {
             console.error('Błąd pobierania danych maszyny:', err);
         } finally {
@@ -66,8 +66,8 @@ function MachineDetails() {
     }
 
     // Filtrujemy aplikacje, szukając tych znanych (vscode, ollama)
-    const installedApps = dockers.filter(container => 
-        container.name && (container.name.includes('vscode') || container.name.includes('ollama'))
+    const installedApps = dockers.filter(container =>
+        container.name && (container.name.includes('vscode') || container.name.includes('ai-assistant') || container.name.includes('whisper-asr'))
     );
 
     // Konfiguracja Narzędzi Systemowych
@@ -166,15 +166,25 @@ function MachineDetails() {
                                 appTitle = "VS CODE";
                                 colorClass = "text-cyan-400";
                                 bgClass = "bg-cyan-500/10";
-                            } 
+                            }
                             // Ollama LLM
-                            else if (app.name.includes('ollama')) {
-                                appUrl = `http://${targetIp}:11434`;
+                            else if (app.name.includes('ai-assistant')) {
+                                appUrl = `http://${targetIp}:3000`; // Port dla Open WebUI
                                 AppIcon = Brain;
-                                appTitle = "OLLAMA";
+                                appTitle = "AI ASSISTANT";
                                 colorClass = "text-rose-400";
                                 bgClass = "bg-rose-500/10";
                             }
+
+                            // --- DODAJEMY TEN FRAGMENT ---
+                            else if (app.name.includes('whisper-asr')) {
+                                appUrl = `http://${targetIp}:9000/docs`; // Kierujemy od razu na podstronę /docs z interfejsem graficznym
+                                AppIcon = Mic;
+                                appTitle = "WHISPER AI";
+                                colorClass = "text-violet-400"; // Fioletowy ładnie pasuje do audio
+                                bgClass = "bg-violet-500/10";
+                            }
+                            // -----------------------------
 
                             const isRunning = app.state === 'running';
 

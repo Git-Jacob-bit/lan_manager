@@ -1,21 +1,31 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import axios from 'axios';
-import { ArrowLeft, CheckCircle2, Loader2, Download, Package } from 'lucide-react';
+import { ArrowLeft, CheckCircle2, Loader2, Download, Package, ExternalLink } from 'lucide-react';
 import { motion } from 'framer-motion';
 
+// 1. ZAKTUALIZOWANA LISTA APLIKACJI (Dodane porty i nowe ID)
 const APPS = [
     {
         id: 'vscode',
         name: 'VS Code Server',
-        icon: '📝',
-        description: 'Pełnoprawne środowisko programistyczne (IDE) działające prosto w przeglądarce. Posiada dostęp do plików maszyny.'
+        icon: '💻',
+        description: 'Pełnoprawne środowisko programistyczne (IDE) działające prosto w przeglądarce. Posiada dostęp do plików maszyny.',
+        port: 8443
     },
     {
-        id: 'ollama',
-        name: 'Ollama (LLM)',
-        icon: '🦙',
-        description: 'Uruchamiaj lokalne modele sztucznej inteligencji (np. Llama 3, Mistral) bez wysyłania danych do chmury.'
+        id: 'ai-assistant', // <--- Zmienione na to samo ID, co w Agencie w Go
+        name: 'Ollama AI Assistant',
+        icon: '🧠',
+        description: 'Twój prywatny asystent AI i analizator dokumentów (Open WebUI + LLM). Dane nie opuszczają sieci LAN.',
+        port: 3000 // <--- Port, na którym działa interfejs WebUI
+    },
+    {
+        id: 'whisper-asr',
+        name: 'Whisper AI',
+        icon: '🎙️',
+        description: 'Lokalna transkrypcja mowy na tekst. Prześlij plik audio/wideo, a sztuczna inteligencja zamieni go na tekst.',
+        port: 9000 
     }
 ];
 
@@ -25,9 +35,8 @@ const AppManagerPage = () => {
     
     const [machine, setMachine] = useState(null);
     const [loading, setLoading] = useState(true);
-    const [installingApp, setInstallingApp] = useState(null); // Przechowuje ID aktualnie instalowanej apki
+    const [installingApp, setInstallingApp] = useState(null);
 
-    // 1. Pobieranie danych maszyny z Twojego backendu (zastępuje zmienne Jinja2)
     const fetchMachineData = async () => {
         try {
             const res = await axios.get(`http://${window.location.hostname}:8000/machines/${mac}`);
@@ -41,40 +50,35 @@ const AppManagerPage = () => {
 
     useEffect(() => {
         fetchMachineData();
-        // Opcjonalnie: odświeżaj listę co 5 sekund, żeby sprawdzić status kontenerów
         const interval = setInterval(fetchMachineData, 5000);
         return () => clearInterval(interval);
     }, [mac]);
 
-    // 2. Funkcja sprawdzająca czy aplikacja jest już zainstalowana
     const isAppInstalled = (appId) => {
-        // Zakładamy, że API zwraca listę dockers w machine.dockers 
-        // (zgodnie z tym co Agent w Go wysyła jako metryki)
         if (!machine || !machine.dockers) return false;
         return machine.dockers.some(container => container.name.includes(appId));
     };
 
-    // 3. Instalacja aplikacji (z inteligentnym wyborem IP - LAN vs Tailscale)
+    // 2. WYCIĄGNIĘTA LOGIKA ADRESU IP (Przydaje się do instalacji ORAZ do przycisku Otwórz)
+    const getTargetIp = () => {
+        if (!machine) return window.location.hostname;
+        const currentHost = window.location.hostname;
+        if (currentHost.startsWith('100.') && machine.tailscale_ip) {
+            return machine.tailscale_ip;
+        }
+        return machine.ip || currentHost;
+    };
+
     const handleInstall = async (appId) => {
         if (!machine) return;
         setInstallingApp(appId);
 
-        const currentHost = window.location.hostname;
-        let targetHost = machine.ip;
-        if (currentHost.startsWith('100.') && machine.tailscale_ip) {
-            targetHost = machine.tailscale_ip;
-        }
-        if (!targetHost) targetHost = currentHost;
+        const targetHost = getTargetIp();
 
         try {
-            // 1. Wysyłamy żądanie instalacji
             await axios.post(`http://${targetHost}:8001/apps/install?id=${appId}`);
             
-            // 2. Dajemy wyraźny feedback użytkownikowi
-            alert(`✅ Sukces! Aplikacja ${appId} została zainstalowana na maszynie.`);
-            
-            // 3. Czekamy 3 sekundy, żeby Agent zdążył wysłać nowe metryki do bazy,
-            // po czym pobieramy świeże dane (przycisk zmieni się na "Zainstalowano")
+            // Usunąłem Alert, żeby nie blokował przeglądarki, użytkownik widzi zmianę na przycisku
             setTimeout(() => {
                 fetchMachineData();
                 setInstallingApp(null);
@@ -98,7 +102,6 @@ const AppManagerPage = () => {
     return (
         <div className="min-h-screen bg-slate-950 text-white flex flex-col p-6">
             
-            {/* --- NAGŁÓWEK --- */}
             <div className="flex justify-between items-center mb-8">
                 <button onClick={() => navigate(-1)} className="flex items-center gap-2 bg-slate-900 hover:bg-slate-800 transition-colors px-4 py-2 rounded-full border border-slate-800 shadow-md">
                     <ArrowLeft size={18} /> Powrót do Huba
@@ -113,15 +116,16 @@ const AppManagerPage = () => {
                     </p>
                 </div>
 
-                {/* Pusty div dla wyśrodkowania flexboxa */}
                 <div className="w-[140px]"></div> 
             </div>
 
-            {/* --- SIATKA APLIKACJI --- */}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 max-w-6xl mx-auto w-full">
                 {APPS.map((app) => {
                     const installed = isAppInstalled(app.id);
                     const isInstallingThis = installingApp === app.id;
+                    
+                    // 3. GENEROWANIE LINKU DO APLIKACJI
+                    const appUrl = `http://${getTargetIp()}:${app.port}`;
 
                     return (
                         <motion.div 
@@ -129,7 +133,6 @@ const AppManagerPage = () => {
                             whileHover={{ y: installed ? 0 : -5 }}
                             className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl flex flex-col h-full relative overflow-hidden"
                         >
-                            {/* Dekoracyjne tło dla estetyki */}
                             <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-emerald-500 to-cyan-500 opacity-50"></div>
 
                             <div className="text-center mb-4 mt-2">
@@ -141,20 +144,23 @@ const AppManagerPage = () => {
                                 {app.description}
                             </p>
 
-                            {/* --- PRZYCISK INSTALACJI / STATUS --- */}
+                            {/* --- 4. ZAKTUALIZOWANY PRZYCISK OTWÓRZ / ZAINSTALUJ --- */}
                             {installed ? (
-                                <button disabled className="w-full py-3 rounded-xl font-bold flex items-center justify-center gap-2 bg-slate-800 text-emerald-500 border border-emerald-500/30 opacity-80 cursor-not-allowed">
-                                    <CheckCircle2 size={20} />
-                                    Zainstalowano
+                                <button 
+                                    onClick={() => window.open(appUrl, '_blank')}
+                                    className="w-full py-3 rounded-xl font-bold flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-500 text-white transition-all shadow-lg"
+                                >
+                                    <ExternalLink size={20} />
+                                    Otwórz Aplikację
                                 </button>
                             ) : (
                                 <button 
                                     onClick={() => handleInstall(app.id)}
-                                    disabled={installingApp !== null} // Blokujemy resztę, jeśli coś się już instaluje
+                                    disabled={installingApp !== null}
                                     className={`w-full py-3 rounded-xl font-bold flex items-center justify-center gap-2 transition-all shadow-lg
                                         ${isInstallingThis 
-                                            ? 'bg-warning text-yellow-900 cursor-wait' // Żółty stan ładowania
-                                            : 'bg-blue-600 hover:bg-blue-500 text-white' // Niebieski stan domyślny
+                                            ? 'bg-yellow-600 text-white cursor-wait' 
+                                            : 'bg-blue-600 hover:bg-blue-500 text-white' 
                                         }
                                         ${installingApp !== null && !isInstallingThis ? 'opacity-50 cursor-not-allowed' : ''}
                                     `}
