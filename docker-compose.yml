@@ -39,7 +39,7 @@ services:
     restart: unless-stopped
     ports:
       # Wystawiamy Nginxa na domyślnym porcie HTTP (80)
-      - "80:80"
+      - "8084:80"
     # Zauważ, że usunąłem volumes dla node_modules i /app, 
     # ponieważ Nginx po prostu serwuje "upieczone", statyczne pliki HTML/JS.
 
