@@ -1,0 +1,66 @@
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+from datetime import datetime, timezone
+from typing import List, Optional
+
+# Importy z katalogu wyżej (..)
+from ..database import get_db
+from ..models import Machine
+from ..schemas import MachineResponse
+
+# Tworzymy router dla bazowych operacji na maszynach
+router = APIRouter(prefix="/machines", tags=["Machines"])
+
+@router.get("/", response_model=List[MachineResponse])
+async def get_machines(db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Machine))
+    machines = result.scalars().all()
+
+    now = datetime.now(timezone.utc)
+    changes_made = False
+
+    for machine in machines:
+        # Sprawdzamy, czy maszyna od ponad 10 sekund nic nie wysłała
+        if (now - machine.last_seen).total_seconds() > 10:
+            if machine.status != "offline":
+                machine.status = "offline"
+                changes_made = True
+
+    if changes_made:
+        await db.commit()
+
+    return machines
+
+
+# Frontend i Agent używają tego endpointu do rejestracji / aktualizacji IP
+@router.post("/")
+async def register_machine(name: str, ip: str, mac: str, tailscale_ip: Optional[str] = None, db: AsyncSession = Depends(get_db)):
+    query = select(Machine).where(Machine.mac == mac)
+    result = await db.execute(query)
+    existing_machine = result.scalars().first()
+
+    if existing_machine:
+        # Maszyna już istnieje, aktualizujemy jej dane
+        existing_machine.name = name
+        existing_machine.ip = ip
+        existing_machine.tailscale_ip = tailscale_ip
+        existing_machine.status = "online"
+        existing_machine.last_seen = datetime.now(timezone.utc)
+        
+        await db.commit()
+        await db.refresh(existing_machine)
+        return existing_machine
+    else:
+        # Nowa maszyna - dodajemy do bazy
+        new_machine = Machine(
+            name=name, 
+            ip=ip, 
+            mac=mac, 
+            tailscale_ip=tailscale_ip, 
+            status="online"
+        )
+        db.add(new_machine)
+        await db.commit()
+        await db.refresh(new_machine)
+        return new_machine

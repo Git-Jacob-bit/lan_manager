@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <title>Hub Maszyny - {{ machine.name }}</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" />
+    <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
+
+    <style>
+        .app-tile {
+            transition: transform 0.2s, box-shadow 0.2s;
+            cursor: pointer;
+            text-decoration: none;
+            color: inherit;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 180px;
+            border-radius: 20px;
+            background-color: #ffffff;
+        }
+        .app-tile:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 10px 20px rgba(0,0,0,0.1) !important;
+        }
+        .app-icon {
+            font-size: 4rem;
+            margin-bottom: 10px;
+        }
+        .app-title {
+            font-weight: 600;
+            font-size: 1.2rem;
+        }
+        /* Fix dla czarnego tła terminala w Bootstrapie */
+        .xterm-viewport {
+            border-radius: 0 0 8px 8px;
+        }
+    </style>
+</head>
+<body class="bg-light pb-5">
+    <div class="container mt-5">
+        
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <a href="/ui" class="btn btn-outline-secondary px-4 rounded-pill">⬅️ Powrót do listy maszyn</a>
+            <span class="badge {{ 'bg-success' if machine.status == 'online' else 'bg-secondary' }} rounded-pill px-3 py-2 fs-6">
+                {{ machine.status | upper }}
+            </span>
+        </div>
+
+        <div class="text-center mb-5">
+            <h1 class="display-5 fw-bold text-dark">{{ machine.name }}</h1>
+            <p class="text-muted fs-5">IP: {{ machine.ip }} | MAC: {{ machine.mac }}</p>
+        </div>
+
+        <h5 class="text-muted mb-3 fw-bold border-bottom pb-2">Narzędzia Systemowe</h5>
+        <div class="row g-4 mb-5 justify-content-start">
+            
+            <div class="col-6 col-md-4 col-lg-3">
+                <a href="/ui/machines/{{ machine.mac }}/telemetry" class="app-tile shadow-sm border text-primary">
+                    <div class="app-icon">📊</div>
+                    <div class="app-title">Telemetria</div>
+                </a>
+            </div>
+
+            <div class="col-6 col-md-4 col-lg-3">
+                <a href="/ui/machines/{{ machine.mac }}/docker" class="app-tile shadow-sm border text-success">
+                    <div class="app-icon">🐳</div>
+                    <div class="app-title">Docker UI</div>
+                </a>
+            </div>
+
+            <div class="col-6 col-md-4 col-lg-3">
+                <a href="javascript:void(0);" onclick="startTerminal('{{ machine.mac }}')" class="app-tile shadow-sm border text-dark">
+                    <div class="app-icon">💻</div>
+                    <div class="app-title">Terminal Live</div>
+                </a>
+            </div>
+
+            <div class="col-6 col-md-4 col-lg-3">
+                <a href="/ui/machines/{{ machine.mac }}/apps" class="app-tile shadow-sm border text-warning" style="background-color: #fffdf5;">
+                    <div class="app-icon">🛒</div>
+                    <div class="app-title">Menedżer Aplikacji</div>
+                    <small class="text-muted">Pobierz nowe</small>
+                </a>
+            </div>
+
+            <div class="col-6 col-md-4 col-lg-3">
+                <a href="#" class="app-tile shadow-sm border text-muted" style="background-color: #f8f9fa;">
+                    <div class="app-icon" style="opacity: 0.5;">⚙️</div>
+                    <div class="app-title">Ustawienia</div>
+                    <small>Wkrótce</small>
+                </a>
+            </div>
+
+        </div>
+
+        <h5 class="text-muted mb-3 fw-bold border-bottom pb-2">Twoje Aplikacje</h5>
+        <div class="row g-4" id="installed-apps-container">
+            </div>
+
+        <div id="terminal-section" style="display: none;" class="mt-5 card bg-dark text-white shadow-lg border-0 rounded-4 overflow-hidden">
+            <div class="card-header border-bottom border-secondary d-flex justify-content-between align-items-center bg-black py-3">
+                <h5 id="terminal-header" class="mb-0 text-success font-monospace" style="font-size: 1.1rem;">💻 Terminal</h5>
+                <div>
+                    <span id="term-status" class="me-3 text-secondary font-monospace small">Łączenie...</span>
+                    <button onclick="stopTerminal()" class="btn btn-sm btn-outline-danger rounded-pill px-3 fw-bold">Rozłącz i zamknij</button>
+                </div>
+            </div>
+            <div class="card-body p-2 bg-black">
+                <div id="terminal-container" style="height: 500px; width: 100%;"></div>
+            </div>
+        </div>
+
+    </div>
+
+    <script>
+        let term = null;
+        let fitAddon = null;
+        let ws = null;
+
+        function startTerminal(machineMac) {
+            // Przechodzi do widoku terminala w TEJ SAMEJ karcie
+            window.location.href = `/ui/machines/${machineMac}/terminal`;
+        }
+
+        function stopTerminal() {
+            if (ws) {
+                ws.close();
+                ws = null;
+            }
+            document.getElementById('terminal-section').style.display = "none";
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+    </script>
+
+    <script>
+        // Zakładam, że backend zwraca dockery jako string JSON lub listę z serializacją Jinja2.
+        // Używamy bezpiecznego parsowania.
+		const dockersList = {{ dockers | tojson | safe if dockers is defined else "[]" }};
+		
+
+        const appsContainer = document.getElementById('installed-apps-container');
+        const targetIp = "{{ machine.ip }}";
+        let appsFound = false;
+
+        if (Array.isArray(dockersList)) {
+            dockersList.forEach(container => {
+                // Filtrujemy tylko nasze "sklepowe" aplikacje
+                if (container.name.startsWith('app-')) {
+                    appsFound = true;
+                    let appUrl = "#";
+                    let appIcon = "📦";
+                    let appTitle = container.name.replace('app-', '').toUpperCase();
+                    let tileColorClass = "text-primary";
+
+                    // Słownik z danymi aplikacji (możesz tu dodawać kolejne porty!)
+                    if (container.name === 'app-vscode') {
+                        appUrl = `http://${window.location.hostname}:8443`;
+                        appIcon = "📝";
+                        appTitle = "VS Code";
+                        tileColorClass = "text-info";
+                    } else if (container.name === 'app-ollama') {
+                        appUrl = `http://${window.location.hostname}:11434`;
+                        appIcon = "🦙";
+                        appTitle = "Ollama LLM";
+                        tileColorClass = "text-danger";
+                    }
+
+                    // Budowanie kafelka
+                    const tileHtml = `
+                        <div class="col-6 col-md-4 col-lg-3">
+                            <a href="${appUrl}" target="_blank" class="app-tile shadow-sm border ${tileColorClass}">
+                                <div class="app-icon">${appIcon}</div>
+                                <div class="app-title">${appTitle}</div>
+                                <span class="badge ${container.state === 'running' ? 'bg-success' : 'bg-danger'} mt-2">
+                                    ${container.state === 'running' ? 'Działa' : 'Zatrzymany'}
+                                </span>
+                            </a>
+                        </div>
+                    `;
+                    appsContainer.innerHTML += tileHtml;
+                }
+            });
+        }
+
+        // Jeśli maszyna nie ma żadnych apek, pokazujemy zachętę
+        if (!appsFound) {
+            appsContainer.innerHTML = `
+                <div class="col-12 text-center py-5 rounded-4 bg-white border shadow-sm">
+                    <p class="text-muted mb-3 fs-5">Nie zainstalowałeś jeszcze żadnych aplikacji.</p>
+                    <a href="/ui/machines/{{ machine.mac }}/apps" class="btn btn-warning rounded-pill px-4 fw-bold">Otwórz Menedżer Aplikacji</a>
+                </div>`;
+        }
+    </script>
+</body>
+</html>

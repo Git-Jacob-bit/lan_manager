@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <title>LAN Machine Manager</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        .machine-card {
+            transition: transform 0.2s, box-shadow 0.2s;
+            border-radius: 15px;
+        }
+        .machine-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 10px 20px rgba(0,0,0,0.1) !important;
+        }
+        .status-indicator {
+            width: 15px;
+            height: 15px;
+            border-radius: 50%;
+            display: inline-block;
+        }
+        .status-online { background-color: #28a745; box-shadow: 0 0 8px #28a745; }
+        .status-offline { background-color: #dc3545; }
+        
+        /* Dodatkowy styl dla lepszego wyglądu zablokowanych przycisków */
+        button:disabled {
+            cursor: not-allowed;
+            opacity: 0.65;
+        }
+    </style>
+</head>
+<body class="bg-light pb-5">
+    <nav class="navbar navbar-dark bg-dark shadow-sm mb-5">
+        <div class="container">
+            <span class="navbar-brand mb-0 h1 fs-3">🚀 LAN Machine Manager</span>
+        </div>
+    </nav>
+
+    <div class="container">
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h2 class="fw-bold text-dark">Moje Maszyny</h2>
+            <button onclick="location.reload()" class="btn btn-outline-primary rounded-pill px-4">🔄 Odśwież</button>
+        </div>
+
+        <div class="row g-4">
+            {% for machine in machines %}
+            <div class="col-md-6 col-lg-4">
+                <div class="card shadow-sm border-0 h-100 machine-card {% if machine.status == 'offline' %}opacity-75{% endif %}">
+                    
+                    <div class="card-body p-4 pb-2">
+                        <div class="d-flex justify-content-between align-items-start mb-3">
+                            <h4 class="fw-bold mb-0 {% if machine.status == 'online' %}text-primary{% else %}text-muted{% endif %}">
+                                {{ machine.name }}
+                                {% if machine.is_server %}
+                                    <span class="badge bg-warning text-dark ms-2 fs-6">Serwer</span>
+                                {% endif %}
+                            </h4>
+                            <div class="d-flex align-items-center gap-2">
+                                <span class="status-indicator {{ 'status-online' if machine.status == 'online' else 'status-offline' }}"></span>
+                            </div>
+                        </div>
+                        
+                        <div class="text-muted mb-2">
+                            <small class="text-uppercase fw-bold opacity-75">Adres IP</small>
+                            <div class="fs-5">{{ machine.ip }}</div>
+                        </div>
+                        
+                        <div class="text-muted mb-3">
+                            <small class="text-uppercase fw-bold opacity-75">Adres MAC</small>
+                            <div class="font-monospace">{{ machine.mac }}</div>
+                        </div>
+                    </div>
+                    
+                    <div class="card-footer bg-transparent border-top-0 pt-0 pb-4 px-4">
+                        <div class="d-flex gap-2 justify-content-center">
+                            
+                            <a href="{% if machine.status == 'online' %}/ui/machines/{{ machine.mac }}{% else %}javascript:void(0){% endif %}" 
+                               class="btn btn-primary flex-grow-1 {% if machine.status == 'offline' %}disabled{% endif %}"
+                               {% if machine.status == 'offline' %}tabindex="-1" aria-disabled="true"{% endif %}>
+                                🌐 Przejdź
+                            </a>
+
+                            <button onclick="wakeMachine('{{ machine.mac }}')" 
+                                    class="btn btn-success flex-grow-1"
+                                    {% if machine.status == 'online' %}disabled{% endif %}>
+                                ⚡ Włącz
+                            </button>
+
+                            <button onclick="powerOffMachine('{{ machine.mac }}')" 
+                                    class="btn btn-danger flex-grow-1"
+                                    {% if machine.status == 'offline' or machine.is_server %}disabled{% endif %}
+                                    {% if machine.is_server %}title="Zabezpieczenie: Nie można wyłączyć głównego serwera"{% endif %}>
+                                🛑 {% if machine.is_server %}Zablokowane{% else %}Wyłącz{% endif %}
+                            </button>
+
+                        </div>
+                    </div>
+                </div>
+            </div>
+            {% else %}
+            <div class="col-12 text-center py-5">
+                <div class="display-1 text-muted opacity-25 mb-3">📭</div>
+                <h3 class="text-muted">Brak podłączonych maszyn</h3>
+                <p class="text-muted">Uruchom Agenta na dowolnym komputerze w sieci, aby się tutaj pojawił.</p>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+
+    <script>
+        async function wakeMachine(mac) {
+            if (!confirm('Czy na pewno chcesz obudzić tę maszynę (Wake-on-LAN)?')) return;
+            
+            try {
+                const response = await fetch(`/api/machines/${mac}/wake`, { method: 'POST' });
+                const data = await response.json();
+                
+                if (response.ok) {
+                    alert('Sygnał Wake-on-LAN został wysłany! Maszyna powinna wstać za chwilę.');
+                } else {
+                    alert('Błąd: ' + (data.detail || 'Nie udało się wysłać sygnału.'));
+                }
+            } catch (err) {
+                alert('Błąd połączenia z serwerem: ' + err);
+            }
+        }
+
+        async function powerOffMachine(mac) {
+            if (!confirm('Czy NA PEWNO chcesz WYŁĄCZYĆ ten komputer?')) return;
+            
+            try {
+                const response = await fetch(`/api/machines/${mac}/power`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action: 'shutdown' })
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok) {
+                    alert('Rozkaz wyłączenia wysłany. Maszyna gaśnie.');
+                    setTimeout(() => location.reload(), 1500); 
+                } else {
+                    alert('Błąd: ' + (data.detail || 'Nie udało się wyłączyć maszyny.'));
+                }
+            } catch (err) {
+                alert('Błąd połączenia z serwerem: ' + err);
+            }
+        }
+    </script>
+</body>
+</html>

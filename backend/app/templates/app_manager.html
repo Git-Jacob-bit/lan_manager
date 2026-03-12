@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Menedżer Aplikacji - {{ machine.name }}</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body { background-color: #f8f9fa; }
+        .app-card {
+            transition: transform 0.2s, box-shadow 0.2s;
+            border-radius: 12px;
+        }
+        .app-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 .5rem 1rem rgba(0,0,0,.15)!important;
+        }
+        .app-icon-large {
+            font-size: 3rem;
+            line-height: 1;
+        }
+    </style>
+</head>
+<body class="pb-5">
+
+    <div class="container mt-5">
+        <div class="d-flex justify-content-between align-items-center mb-5">
+            <a href="/ui/machines/{{ machine.mac }}" class="btn btn-outline-secondary px-4 rounded-pill">⬅️ Powrót do Huba</a>
+            <h2 class="m-0 fw-bold text-dark">🛒 Menedżer Aplikacji</h2>
+            <span class="text-muted font-monospace">{{ machine.ip }}</span>
+        </div>
+
+        <div class="row g-4">
+            <div class="col-md-6 col-lg-4">
+                <div class="card app-card shadow-sm h-100 border-0">
+                    <div class="card-body text-center p-4">
+                        <div class="app-icon-large mb-3">📝</div>
+                        <h4 class="fw-bold">VS Code Server</h4>
+                        <p class="text-muted small mb-4">Pełnoprawne środowisko programistyczne (IDE) działające prosto w przeglądarce. Posiada dostęp do plików maszyny.</p>
+                        <button id="btn-vscode" onclick="installApp('vscode', 'btn-vscode')" class="btn btn-primary w-100 rounded-pill fw-bold">
+                            ⬇️ Zainstaluj
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="col-md-6 col-lg-4">
+                <div class="card app-card shadow-sm h-100 border-0">
+                    <div class="card-body text-center p-4">
+                        <div class="app-icon-large mb-3">🦙</div>
+                        <h4 class="fw-bold">Ollama (LLM)</h4>
+                        <p class="text-muted small mb-4">Uruchamiaj lokalne modele sztucznej inteligencji (np. Llama 3, Mistral) bez wysyłania danych do chmury.</p>
+                        <button id="btn-ollama" onclick="installApp('ollama', 'btn-ollama')" class="btn btn-primary w-100 rounded-pill fw-bold">
+                            ⬇️ Zainstaluj
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            </div>
+    </div>
+
+    <script>
+        const targetIp = "{{ machine.ip }}";
+        // 1. Odbieramy dane z Jinja2
+        const dockersList = {{ dockers | tojson | safe if dockers is defined else "[]" }};
+    
+        // 2. Funkcja pomocnicza zmieniająca wygląd przycisku
+        function setAsInstalled(btnId) {
+            const btn = document.getElementById(btnId);
+            btn.innerHTML = "✅ Zainstalowano";
+            btn.classList.remove('btn-primary', 'btn-warning');
+            btn.classList.add('btn-success', 'disabled', 'pe-none');
+            btn.style.opacity = "0.7";
+        }
+    
+        // 3. Automatyczne sprawdzanie przy ładowaniu strony
+        document.addEventListener("DOMContentLoaded", () => {
+            dockersList.forEach(container => {
+                // Sprawdzamy czy nazwa kontenera zawiera nazwę aplikacji (np. "vscode")
+                if (container.name.includes('vscode')) setAsInstalled('btn-vscode');
+                if (container.name.includes('ollama')) setAsInstalled('btn-ollama');
+            });
+        });
+    
+        function installApp(appId, btnId) {
+            const btn = document.getElementById(btnId);
+            btn.innerHTML = `<span class="spinner-border spinner-border-sm"></span> Instalowanie...`;
+            btn.classList.replace('btn-primary', 'btn-warning');
+            btn.classList.add('pe-none');
+    
+            fetch(`http://${targetIp}:8001/apps/install?id=${appId}`, { method: 'POST' })
+                .then(response => {
+                    if (response.ok) {
+                        setAsInstalled(btnId);
+                        window.location.reload()
+                    } else {
+                        throw new Error('Błąd serwera');
+                    }
+                })
+                .catch(error => {
+                    alert(`❌ Błąd instalacji ${appId}.`);
+                    btn.innerHTML = "⬇️ Zainstaluj";
+                    btn.classList.replace('btn-warning', 'btn-primary');
+                    btn.classList.remove('pe-none');
+                });
+        }
+    </script>
+</body>
+</html>

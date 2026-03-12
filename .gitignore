@@ -1,0 +1,18 @@
+# Sekrety
+.env
+
+# Środowisko wirtualne Pythona
+venv/
+.venv/
+env/
+
+# Cache i pliki tymczasowe Pythona
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# Pliki systemowe
+.DS_Store
+Thumbs.db
