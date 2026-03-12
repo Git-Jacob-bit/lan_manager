@@ -5,17 +5,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"net/http"
 	"os"
 	"os/exec"
-	"path/filepath"
-	"time"
-	"strings"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
+	"time"
 
 	"github.com/creack/pty"
 	"github.com/docker/docker/api/types"
@@ -62,39 +61,48 @@ func handleTerminal(w http.ResponseWriter, r *http.Request) {
 		log.Println("❌ Błąd WebSocket:", err)
 		return
 	}
-	defer ws.Close()
 
 	log.Println("🔌 Nawiązano połączenie z Terminalem (WebSocket)!")
 
-	cmd := exec.Command("bash")
+	// 1. Wymuszenie trybu logowania i odpowiedniego terminala (naprawia brak promptu i kolorów)
+	cmd := exec.Command("bash", "-l")
+	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
+
 	ptmx, err := pty.Start(cmd)
 	if err != nil {
 		log.Println("❌ Błąd uruchamiania PTY:", err)
+		ws.Close()
 		return
 	}
+
+	// 2. KLUCZOWE: Zamykamy deskryptor ORAZ zabijamy proces Bash!
+	// To eliminuje problem zombie i błąd "file already closed"
 	defer func() {
-		_ = ptmx.Close()
-		log.Println("🔌 Zamknięto połączenie z Terminalem.")
+		ptmx.Close()
+		cmd.Process.Kill()
+		ws.Close()
+		log.Println("🔌 Zamknięto połączenie z Terminalem i oczyszczono proces.")
 	}()
 
+	// Czytanie z PTY -> wysyłanie do WebSocket
 	go func() {
 		buf := make([]byte, 1024)
 		for {
 			n, err := ptmx.Read(buf)
 			if err != nil {
-				if err != io.EOF {
-					log.Println("Błąd czytania z PTY:", err)
-				}
+				return // Wychodzimy po cichu, defer posprząta
+			}
+			if err := ws.WriteMessage(websocket.BinaryMessage, buf[:n]); err != nil {
 				return
 			}
-			ws.WriteMessage(websocket.BinaryMessage, buf[:n])
 		}
 	}()
 
+	// Czytanie z WebSocket -> wysyłanie do PTY
 	for {
 		_, msg, err := ws.ReadMessage()
 		if err != nil {
-			break
+			break // Przerwanie pętli odpala defer i zabija sesję
 		}
 		ptmx.Write(msg)
 	}
@@ -154,17 +162,17 @@ func main() {
 	AgentMAC := getMacAddress() // <- O, tutaj!
 	AgentTailscaleIP := getTailscaleIP()
 
-// --- GRACEFUL SHUTDOWN (Szybkie rozłączenie) ---
+	// --- GRACEFUL SHUTDOWN (Szybkie rozłączenie) ---
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-c // Czeka, aż ktoś wyłączy Agenta (np. Ctrl+C)
 		log.Println("⚠️ Otrzymano sygnał wyłączenia! Zgłaszam offline do serwera...")
-		
+
 		// Wysyłamy szybki strzał do backendu, że padamy (musisz obsłużyć ten endpoint na backendzie!)
 		offlineURL := fmt.Sprintf("%s/machines/%s/offline", BackendURL, AgentMAC)
 		http.Post(offlineURL, "application/json", nil)
-		
+
 		log.Println("Zakończono pracę Agenta.")
 		os.Exit(0)
 	}()
@@ -174,7 +182,7 @@ func main() {
 
 	go func() {
 
-// --- NOWOŚĆ: Zarządzanie zasilaniem maszyny ---
+		// --- NOWOŚĆ: Zarządzanie zasilaniem maszyny ---
 		http.HandleFunc("/machine/power", func(w http.ResponseWriter, r *http.Request) {
 			action := r.URL.Query().Get("action") // "shutdown" lub "reboot"
 
@@ -193,14 +201,14 @@ func main() {
 			w.WriteHeader(http.StatusOK)
 			w.Write([]byte("Wykonywanie: " + action))
 
-			// Uruchamiamy komendę w osobnej gorutynie (w tle), żeby Agent zdążył 
+			// Uruchamiamy komendę w osobnej gorutynie (w tle), żeby Agent zdążył
 			// wysłać odpowiedź HTTP "OK" do Dashboardu zanim system zabije proces.
 			go func() {
 				time.Sleep(2 * time.Second)
 				cmd.Run()
 			}()
 		})
-		
+
 		http.HandleFunc("/docker/action", func(w http.ResponseWriter, r *http.Request) {
 			containerName := r.URL.Query().Get("name")
 			action := r.URL.Query().Get("action")
@@ -236,7 +244,7 @@ func main() {
 			switch appName {
 			case "vscode":
 				// --- KLUCZOWE POPRAWKI ---
-				
+
 				// 1. Zamiast os.Executable() używamy os.Getwd(), aby zablokować zjawisko znikających plików w 'go run'
 				agentDir, err := os.Getwd()
 				if err != nil {
@@ -245,7 +253,7 @@ func main() {
 					return
 				}
 				workspacePath := filepath.Join(agentDir, "workspace")
-				
+
 				// 2. Tworzymy folder i dajemy uprawnienia 777 (każdy może czytać/pisać) - eliminuje błędy dostępu z obu stron
 				os.MkdirAll(workspacePath, 0777)
 				exec.Command("chmod", "777", workspacePath).Run()
@@ -376,11 +384,11 @@ func main() {
 
 		metricsURL := fmt.Sprintf("%s/machines/%s/metrics", BackendURL, AgentMAC)
 		mResp, mErr := http.Post(metricsURL, "application/json", bytes.NewBuffer(jsonData))
-		
+
 		if mErr != nil {
 			log.Println("❌ Błąd wysyłania metryk:", mErr)
 		} else {
-			log.Printf("✅ Wysłano metryki | CPU: %.1f%% | RAM: %.1f%% | Dysk: %s | Kontenery: %d\n", 
+			log.Printf("✅ Wysłano metryki | CPU: %.1f%% | RAM: %.1f%% | Dysk: %s | Kontenery: %d\n",
 				metrics.CPUUsage, metrics.RAMUsage, metrics.DiskHealth, len(metrics.Dockers))
 			mResp.Body.Close()
 		}

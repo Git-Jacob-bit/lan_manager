@@ -19,23 +19,17 @@ function MachineDetails() {
 
     const fetchData = async () => {
         try {
-            // 1. Pobieramy dane maszyny (szukamy po MAC w liście wszystkich maszyn)
-            const machinesRes = await axios.get(`${API_BASE}/machines/`);
-            const currentMachine = machinesRes.data.find(m => m.mac === mac);
+            // Pobieramy pełne dane konkretnej maszyny (zawiera też wysłane przez Agenta metryki i dockery)
+            const res = await axios.get(`${API_BASE}/machines/${mac}`);
+            const currentMachine = res.data;
+            
             setMachine(currentMachine);
-
-            // 2. Pobieramy dockery dla tej maszyny (jeśli masz taki endpoint w backendzie)
-            // Zakładam standardowy adres REST. Jeśli go nie masz, po prostu zwróci błąd w tle i pokaże 0 apek.
-            if (currentMachine && currentMachine.status === 'online') {
-                try {
-                    const dockersRes = await axios.get(`${API_BASE}/api/machines/${mac}/dockers`);
-                    setDockers(dockersRes.data || []);
-                } catch (e) {
-                    console.warn("Brak endpointu dockerów lub błąd pobierania:", e);
-                }
-            }
+            
+            // Bezpieczne przypisanie listy kontenerów (jeśli Agent ich jeszcze nie wysłał, dajemy pustą tablicę)
+            setDockers(currentMachine?.dockers || []);
+            
         } catch (err) {
-            console.error('Błąd pobierania danych:', err);
+            console.error('Błąd pobierania danych maszyny:', err);
         } finally {
             setLoading(false);
         }
@@ -62,8 +56,19 @@ function MachineDetails() {
 
     const isOnline = machine.status === 'online';
 
-    // Filtrujemy aplikacje "sklepowe" (wymóg z hub.html: nazwa musi zaczynać się od 'app-')
-    const installedApps = dockers.filter(container => container.name && container.name.startsWith('app-'));
+    // --- LOGIKA WYBORU IP (LAN vs TAILSCALE) ---
+    const currentHost = window.location.hostname;
+    let targetIp = machine.ip;
+    if (currentHost.startsWith('100.') && machine.tailscale_ip) {
+        targetIp = machine.tailscale_ip;
+    } else if (!targetIp) {
+        targetIp = currentHost;
+    }
+
+    // Filtrujemy aplikacje, szukając tych znanych (vscode, ollama)
+    const installedApps = dockers.filter(container => 
+        container.name && (container.name.includes('vscode') || container.name.includes('ollama'))
+    );
 
     // Konfiguracja Narzędzi Systemowych
     const systemTools = [
@@ -83,7 +88,7 @@ function MachineDetails() {
         >
 
             {/* --- GÓRNY PASEK NAWIGACJI --- */}
-            <div className="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-start md:items-center mb-10 gap-4">
+            <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-10 gap-4 max-w-7xl mx-auto">
                 <button
                     onClick={() => navigate('/')}
                     className="flex items-center gap-2 px-4 py-2 rounded-full bg-slate-900 border border-slate-800 hover:bg-slate-800 transition-colors text-sm font-medium text-slate-300 active:scale-95"
@@ -106,7 +111,7 @@ function MachineDetails() {
                 </div>
                 <h1 className="text-4xl md:text-5xl font-extrabold text-white mb-3 tracking-tight">{machine.name}</h1>
                 <div className="flex flex-col md:flex-row justify-center items-center gap-2 md:gap-6 text-slate-400 font-mono text-sm">
-                    <span>IP: <span className="text-blue-300">{machine.ip}</span></span>
+                    <span>IP: <span className="text-blue-300">{targetIp}</span></span>
                     <span className="hidden md:inline text-slate-600">•</span>
                     <span>MAC: <span className="text-slate-300">{machine.mac}</span></span>
                 </div>
@@ -148,21 +153,25 @@ function MachineDetails() {
                 {installedApps.length > 0 ? (
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
                         {installedApps.map((app) => {
-                            // Logika portów z hub.html
                             let appUrl = "#";
                             let AppIcon = Box;
-                            let appTitle = app.name.replace('app-', '').toUpperCase();
+                            let appTitle = "Aplikacja";
                             let colorClass = "text-blue-400";
                             let bgClass = "bg-blue-500/10";
 
-                            if (app.name === 'app-vscode') {
-                                appUrl = `http://${window.location.hostname}:8443`;
+                            // VS Code Server
+                            if (app.name.includes('vscode')) {
+                                appUrl = `http://${targetIp}:8443`;
                                 AppIcon = Code;
+                                appTitle = "VS CODE";
                                 colorClass = "text-cyan-400";
                                 bgClass = "bg-cyan-500/10";
-                            } else if (app.name === 'app-ollama') {
-                                appUrl = `http://${window.location.hostname}:11434`;
+                            } 
+                            // Ollama LLM
+                            else if (app.name.includes('ollama')) {
+                                appUrl = `http://${targetIp}:11434`;
                                 AppIcon = Brain;
+                                appTitle = "OLLAMA";
                                 colorClass = "text-rose-400";
                                 bgClass = "bg-rose-500/10";
                             }

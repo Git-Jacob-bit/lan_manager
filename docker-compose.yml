@@ -8,7 +8,6 @@ services:
     ports:
       - "5432:5432"
     environment:
-      # Zmienne zaciągane automatycznie z pliku .env
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
@@ -23,32 +22,26 @@ services:
     restart: unless-stopped
     depends_on:
       - db
-    
     # Tryb hosta jest niezbędny do działania Wake-on-LAN (pakiety broadcast)
     network_mode: "host"
-    
     environment:
-      # Zaciągamy URL z pliku .env (zobacz, że korzysta z 127.0.0.1, bo backend jest w trybie hosta)
       - DATABASE_URL=${DATABASE_URL}
-    volumes:
-      - ./backend:/app
+    # Na produkcji lepiej zakomentować to mapowanie plików, 
+    # żeby kontener używał kodu skopiowanego podczas budowania obrazu.
+    # volumes:
+    #   - ./backend:/app
 
-  # ----------------------------------------------------------------
-  # FRONTEND - Odkomentujemy ten blok, gdy stworzymy aplikację React
-  # ----------------------------------------------------------------
-  # frontend:
-  #   build:
-  #     context: ./frontend
-  #     dockerfile: Dockerfile
-  #   container_name: lan_machine_frontend
-  #   restart: unless-stopped
-  #   ports:
-  #     - "5173:5173"
-  #   volumes:
-  #     - ./frontend:/app
-  #     - /app/node_modules
-  #   depends_on:
-  #     - backend
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: lan_machine_frontend
+    restart: unless-stopped
+    ports:
+      # Wystawiamy Nginxa na domyślnym porcie HTTP (80)
+      - "80:80"
+    # Zauważ, że usunąłem volumes dla node_modules i /app, 
+    # ponieważ Nginx po prostu serwuje "upieczone", statyczne pliki HTML/JS.
 
 volumes:
   postgres_data:
