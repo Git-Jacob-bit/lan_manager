@@ -1,0 +1,10 @@
+@import "tailwindcss";
+
+/* Twardy reset dla przeglądarki i domyślnych stylów Vite */
+html, body, #root {
+  width: 100%;
+  min-height: 100vh;
+  margin: 0;
+  padding: 0;
+  background-color: #020617; /* To jest kolor slate-950 z Tailwinda */
+}
