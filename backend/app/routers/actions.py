@@ -26,7 +26,7 @@ async def wake_machine(mac: str):
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
             # Jeśli wcześniej używałeś bind (np. do 192.168.0.4), dodaj tę linijkę tutaj:
-            # sock.bind(('192.168.0.4', 0))
+            sock.bind(('192.168.0.4', 0))
             sock.sendto(magic_packet, ('255.255.255.255', 9))
             
         return {"status": "success", "message": f"Wysłano sygnał budzenia do {mac}"}

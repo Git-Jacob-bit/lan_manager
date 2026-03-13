@@ -4,7 +4,7 @@ import { motion } from 'framer-motion';
 import { Server, Power, PowerOff, Activity, ShieldAlert, Zap, ArrowRight, RefreshCw } from 'lucide-react';
 import { useNavigate } from 'react-router-dom'; // <--- DODANY IMPORT DO NAWIGACJI
 
-const API_BASE = `http://localhost:8000`; // Na razie wracamy na sztywny localhost
+const API_BASE = `http://${window.location.hostname}:8000`; // Na razie wracamy na sztywny localhost
 
 function Home() {
     const [machines, setMachines] = useState([]);
