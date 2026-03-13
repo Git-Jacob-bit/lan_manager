@@ -195,40 +195,66 @@ function Telemetry() {
           <Box className="text-slate-400" />
           <h2 className="text-xl font-bold text-slate-200">Uruchomione Kontenery Docker</h2>
         </div>
-        <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse">
-            <thead>
-              <tr className="bg-slate-950/50 text-slate-400 text-sm uppercase tracking-wider border-b border-slate-800">
-                <th className="p-4 font-semibold">Nazwa kontenera</th>
-                <th className="p-4 font-semibold">Status</th>
-                <th className="p-4 font-semibold">Stan (State)</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-800">
+        <>
+            {/* --- WIDOK MOBILNY (KARTY) --- */}
+            <div className="grid grid-cols-1 gap-3 md:hidden p-4">
               {!latestMetric ? (
-                <tr><td colSpan="3" className="p-6 text-center text-slate-500">Czekam na pierwsze dane...</td></tr>
+                <div className="p-6 text-center text-slate-500 bg-slate-800/20 rounded-2xl border border-slate-800">Czekam na pierwsze dane...</div>
               ) : latestMetric.dockers && latestMetric.dockers.length > 0 ? (
                 latestMetric.dockers.map((d, i) => (
-                  <tr key={i} className="hover:bg-slate-800/50 transition-colors">
-                    <td className="p-4 font-bold text-slate-200">{d.name}</td>
-                    <td className="p-4 text-slate-400 text-sm">{d.status}</td>
-                    <td className="p-4">
-                      <span className={`px-2.5 py-1 rounded-lg text-xs font-bold border
-                        ${d.state === 'running' 
-                          ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' 
-                          : 'bg-slate-800 text-slate-400 border-slate-700'}`}
-                      >
+                  <div key={i} className="bg-slate-800/30 border border-slate-700/50 rounded-2xl p-4 flex flex-col gap-2">
+                    <div className="flex justify-between items-center">
+                      <span className="font-bold text-slate-200 truncate pr-2">{d.name}</span>
+                      <span className={`shrink-0 px-2.5 py-1 rounded-lg text-xs font-bold border ${d.state === 'running' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-slate-800 text-slate-400 border-slate-700'}`}>
                         {d.state}
                       </span>
-                    </td>
-                  </tr>
+                    </div>
+                    <div className="text-xs text-slate-400 bg-slate-900/50 p-2 rounded-xl">
+                      Status: {d.status}
+                    </div>
+                  </div>
                 ))
               ) : (
-                <tr><td colSpan="3" className="p-6 text-center text-slate-500">Brak uruchomionych kontenerów</td></tr>
+                <div className="p-6 text-center text-slate-500 bg-slate-800/20 rounded-2xl border border-slate-800">Brak uruchomionych kontenerów</div>
               )}
-            </tbody>
-          </table>
-        </div>
+            </div>
+
+            {/* --- WIDOK DESKTOPOWY (TABELA) --- */}
+            <div className="hidden md:block overflow-x-auto">
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className="bg-slate-950/50 text-slate-400 text-sm uppercase tracking-wider border-b border-slate-800">
+                    <th className="p-4 font-semibold">Nazwa kontenera</th>
+                    <th className="p-4 font-semibold">Status</th>
+                    <th className="p-4 font-semibold">Stan (State)</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800">
+                  {!latestMetric ? (
+                    <tr><td colSpan="3" className="p-6 text-center text-slate-500">Czekam na pierwsze dane...</td></tr>
+                  ) : latestMetric.dockers && latestMetric.dockers.length > 0 ? (
+                    latestMetric.dockers.map((d, i) => (
+                      <tr key={i} className="hover:bg-slate-800/50 transition-colors">
+                        <td className="p-4 font-bold text-slate-200">{d.name}</td>
+                        <td className="p-4 text-slate-400 text-sm">{d.status}</td>
+                        <td className="p-4">
+                          <span className={`px-2.5 py-1 rounded-lg text-xs font-bold border
+                            ${d.state === 'running' 
+                              ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' 
+                              : 'bg-slate-800 text-slate-400 border-slate-700'}`}
+                          >
+                            {d.state}
+                          </span>
+                        </td>
+                      </tr>
+                    ))
+                  ) : (
+                    <tr><td colSpan="3" className="p-6 text-center text-slate-500">Brak uruchomionych kontenerów</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+        </>
       </div>
     </motion.div>
   );

@@ -92,49 +92,92 @@ function DockerManager() {
                         <Loader2 className="animate-spin" /> Ładowanie kontenerów...
                     </div>
                 ) : (
-                    <div className="overflow-x-auto">
-                        <table className="w-full text-left">
-                            <thead className="bg-slate-950/50 text-slate-400 text-sm uppercase">
-                                <tr>
-                                    <th className="p-6">Kontener</th>
-                                    <th className="p-6">Status</th>
-                                    <th className="p-6">Stan</th>
-                                    <th className="p-6 text-right">Akcje</th>
-                                </tr>
-                            </thead>
-                            <tbody className="divide-y divide-slate-800">
-                                {containers.map((d) => (
-                                    <tr key={d.name} className="hover:bg-slate-800/30 transition-colors">
-                                        <td className="p-6 font-bold">{d.name}</td>
-                                        <td className="p-6 text-slate-400 text-sm">{d.status}</td>
-                                        <td className="p-6">
-                                            <span className={`px-3 py-1 rounded-full text-xs font-bold border ${d.state === 'running' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-slate-800 text-slate-500 border-slate-700'
-                                                }`}>
-                                                {d.state}
-                                            </span>
-                                        </td>
-                                        <td className="p-6 text-right flex justify-end gap-2">
-                                            {actionLoading === d.name ? (
-                                                <Loader2 className="animate-spin text-slate-500" size={20} />
-                                            ) : (
-                                                <>
-                                                    {d.state !== 'running' && (
-                                                        <button onClick={() => doAction(d.name, 'start')} className="p-2 hover:bg-emerald-500/20 rounded-lg text-emerald-400 transition-colors"><Play size={18} /></button>
-                                                    )}
-                                                    {d.state === 'running' && (
-                                                        <>
-                                                            <button onClick={() => doAction(d.name, 'stop')} className="p-2 hover:bg-rose-500/20 rounded-lg text-rose-400 transition-colors"><Square size={18} /></button>
-                                                            <button onClick={() => doAction(d.name, 'restart')} className="p-2 hover:bg-amber-500/20 rounded-lg text-amber-400 transition-colors"><RefreshCw size={18} /></button>
-                                                        </>
-                                                    )}
-                                                </>
-                                            )}
-                                        </td>
+                    <>
+                        {/* --- WIDOK MOBILNY (KARTY) --- */}
+                        <div className="grid grid-cols-1 gap-4 md:hidden p-4">
+                            {containers.map((d) => (
+                                <div key={d.name} className="bg-slate-800/50 border border-slate-700/50 rounded-2xl p-4 flex flex-col gap-3">
+                                    <div className="flex justify-between items-start">
+                                        <h3 className="font-bold text-slate-200 truncate pr-2">{d.name}</h3>
+                                        <span className={`shrink-0 px-2.5 py-1 rounded-full text-xs font-bold border ${d.state === 'running' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-slate-800 text-slate-500 border-slate-700'}`}>
+                                            {d.state}
+                                        </span>
+                                    </div>
+                                    <div className="text-xs text-slate-400 bg-slate-900/50 p-2.5 rounded-xl border border-slate-800/50">
+                                        Status: {d.status}
+                                    </div>
+                                    <div className="flex justify-end gap-2 pt-2 border-t border-slate-700/50 mt-1">
+                                        {actionLoading === d.name ? (
+                                            <div className="py-2 px-4"><Loader2 className="animate-spin text-slate-500" size={18} /></div>
+                                        ) : (
+                                            <>
+                                                {d.state !== 'running' && (
+                                                    <button onClick={() => doAction(d.name, 'start')} className="flex items-center gap-1.5 px-4 py-2 bg-emerald-500/10 hover:bg-emerald-500/20 rounded-xl text-emerald-400 transition-colors text-sm font-semibold active:scale-95">
+                                                        <Play size={16} /> Start
+                                                    </button>
+                                                )}
+                                                {d.state === 'running' && (
+                                                    <>
+                                                        <button onClick={() => doAction(d.name, 'stop')} className="flex items-center gap-1.5 px-4 py-2 bg-rose-500/10 hover:bg-rose-500/20 rounded-xl text-rose-400 transition-colors text-sm font-semibold active:scale-95">
+                                                            <Square size={16} /> Stop
+                                                        </button>
+                                                        <button onClick={() => doAction(d.name, 'restart')} className="flex items-center gap-1.5 px-4 py-2 bg-amber-500/10 hover:bg-amber-500/20 rounded-xl text-amber-400 transition-colors text-sm font-semibold active:scale-95">
+                                                            <RefreshCw size={16} /> Restart
+                                                        </button>
+                                                    </>
+                                                )}
+                                            </>
+                                        )}
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+
+                        {/* --- WIDOK DESKTOPOWY (TABELA) --- */}
+                        <div className="hidden md:block overflow-x-auto">
+                            <table className="w-full text-left">
+                                <thead className="bg-slate-950/50 text-slate-400 text-sm uppercase">
+                                    <tr>
+                                        <th className="p-6">Kontener</th>
+                                        <th className="p-6">Status</th>
+                                        <th className="p-6">Stan</th>
+                                        <th className="p-6 text-right">Akcje</th>
                                     </tr>
-                                ))}
-                            </tbody>
-                        </table>
-                    </div>
+                                </thead>
+                                <tbody className="divide-y divide-slate-800">
+                                    {containers.map((d) => (
+                                        <tr key={d.name} className="hover:bg-slate-800/30 transition-colors">
+                                            <td className="p-6 font-bold">{d.name}</td>
+                                            <td className="p-6 text-slate-400 text-sm">{d.status}</td>
+                                            <td className="p-6">
+                                                <span className={`px-3 py-1 rounded-full text-xs font-bold border ${d.state === 'running' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-slate-800 text-slate-500 border-slate-700'
+                                                    }`}>
+                                                    {d.state}
+                                                </span>
+                                            </td>
+                                            <td className="p-6 text-right flex justify-end gap-2">
+                                                {actionLoading === d.name ? (
+                                                    <Loader2 className="animate-spin text-slate-500" size={20} />
+                                                ) : (
+                                                    <>
+                                                        {d.state !== 'running' && (
+                                                            <button onClick={() => doAction(d.name, 'start')} className="p-2 hover:bg-emerald-500/20 rounded-lg text-emerald-400 transition-colors"><Play size={18} /></button>
+                                                        )}
+                                                        {d.state === 'running' && (
+                                                            <>
+                                                                <button onClick={() => doAction(d.name, 'stop')} className="p-2 hover:bg-rose-500/20 rounded-lg text-rose-400 transition-colors"><Square size={18} /></button>
+                                                                <button onClick={() => doAction(d.name, 'restart')} className="p-2 hover:bg-amber-500/20 rounded-lg text-amber-400 transition-colors"><RefreshCw size={18} /></button>
+                                                            </>
+                                                        )}
+                                                    </>
+                                                )}
+                                            </td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
+                    </>
                 )}
             </div>
         </motion.div>
