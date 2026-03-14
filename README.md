@@ -34,5 +34,5 @@ Aplikacja jest w pełni skonteneryzowana. Aby uruchomić projekt na swoim serwer
 
 1. Sklonuj repozytorium:
    ```bash
-   git clone [https://github.com/TwojLogin/lan_manager.git](https://github.com/TwojLogin/lan_manager.git)
+   git clone https://github.com/Git-Jacob-bit/lan_manager.git
    cd lan_manager
