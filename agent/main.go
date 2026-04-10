@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -15,6 +16,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"runtime"
+	"io"
 
 	"github.com/creack/pty"
 	"github.com/docker/docker/api/types"
@@ -27,9 +30,9 @@ import (
 )
 
 // Konfiguracja
-const (
-	BackendURL = "http://localhost:8000"
-)
+
+var BackendURL = "http://localhost:8000"
+
 
 // Struktura dla pojedynczego kontenera
 type DockerStats struct {
@@ -54,7 +57,6 @@ var upgrader = websocket.Upgrader{
 		return true
 	},
 }
-
 func handleTerminal(w http.ResponseWriter, r *http.Request) {
 	ws, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -62,49 +64,77 @@ func handleTerminal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Println("🔌 Nawiązano połączenie z Terminalem (WebSocket)!")
+	log.Printf("🔌 Nawiązano połączenie z Terminalem (%s)!", runtime.GOOS)
 
-	// 1. Wymuszenie trybu logowania i odpowiedniego terminala (naprawia brak promptu i kolorów)
-	cmd := exec.Command("bash", "-l")
-	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
+	var cmd *exec.Cmd
+	var shell string
 
-	ptmx, err := pty.Start(cmd)
-	if err != nil {
-		log.Println("❌ Błąd uruchamiania PTY:", err)
-		ws.Close()
-		return
+	// 1. Wybór powłoki w zależności od systemu
+	if runtime.GOOS == "windows" {
+		shell = "powershell.exe"
+		cmd = exec.Command(shell, "-NoLogo")
+	} else {
+		shell = "bash"
+		cmd = exec.Command(shell, "-l")
+		cmd.Env = append(os.Environ(), "TERM=xterm-256color")
 	}
 
-	// 2. KLUCZOWE: Zamykamy deskryptor ORAZ zabijamy proces Bash!
-	// To eliminuje problem zombie i błąd "file already closed"
-	defer func() {
-		ptmx.Close()
-		cmd.Process.Kill()
-		ws.Close()
-		log.Println("🔌 Zamknięto połączenie z Terminalem i oczyszczono proces.")
-	}()
-
-	// Czytanie z PTY -> wysyłanie do WebSocket
-	go func() {
-		buf := make([]byte, 1024)
-		for {
-			n, err := ptmx.Read(buf)
-			if err != nil {
-				return // Wychodzimy po cichu, defer posprząta
-			}
-			if err := ws.WriteMessage(websocket.BinaryMessage, buf[:n]); err != nil {
-				return
-			}
-		}
-	}()
-
-	// Czytanie z WebSocket -> wysyłanie do PTY
-	for {
-		_, msg, err := ws.ReadMessage()
+	// 2. Obsługa PTY dla Linux vs Pipes dla Windows
+	if runtime.GOOS != "windows" {
+		// LOGIKA DLA LINUX (z użyciem PTY)
+		ptmx, err := pty.Start(cmd)
 		if err != nil {
-			break // Przerwanie pętli odpala defer i zabija sesję
+			log.Println("❌ Błąd PTY:", err)
+			return
 		}
-		ptmx.Write(msg)
+		defer func() {
+			ptmx.Close()
+			cmd.Process.Kill()
+			ws.Close()
+		}()
+
+		// Kopiowanie danych PTY <-> WS
+		go func() { io.Copy(ws.UnderlyingConn(), ptmx) }()
+		go func() { io.Copy(ptmx, ws.UnderlyingConn()) }()
+
+	} else {
+		// LOGIKA DLA WINDOWS (standardowe potoki)
+		stdin, _ := cmd.StdinPipe()
+		stdout, _ := cmd.StdoutPipe()
+		stderr, _ := cmd.StderrPipe()
+
+		err := cmd.Start()
+		if err != nil {
+			log.Println("❌ Błąd uruchamiania procesu:", err)
+			return
+		}
+
+		defer func() {
+			cmd.Process.Kill()
+			ws.Close()
+		}()
+
+		// Czytanie z PowerShell -> Wysyłanie do przeglądarki
+		go func() {
+			combined := io.MultiReader(stdout, stderr)
+			buf := make([]byte, 1024)
+			for {
+				n, err := combined.Read(buf)
+				if err != nil {
+					break
+				}
+				ws.WriteMessage(websocket.BinaryMessage, buf[:n])
+			}
+		}()
+
+		// Czytanie z przeglądarki -> Wysyłanie do PowerShell
+		for {
+			_, msg, err := ws.ReadMessage()
+			if err != nil {
+				break
+			}
+			stdin.Write(msg)
+		}
 	}
 }
 
@@ -157,9 +187,21 @@ func getTailscaleIP() string {
 }
 
 func main() {
+
+	// definicja flagi --server
+	serverFlag := flag.String("server", "", "Adres serwera backend (np. http://100.x.y.z:8000)")
+	flag.Parse()
+
+	// Najpierw sprawdzamy flagę, potem zmienną środowiskową, na końcu zostaje domyślny localhost
+	if *serverFlag != "" {
+		BackendURL = *serverFlag
+	} else if envAddr := os.Getenv("SERVER_URL"); envAddr != "" {
+		BackendURL = envAddr
+	}
+
 	AgentName, _ := os.Hostname()
 	AgentIP := getOutboundIP()
-	AgentMAC := getMacAddress() // <- O, tutaj!
+	AgentMAC := getMacAddress()
 	AgentTailscaleIP := getTailscaleIP()
 
 	// --- GRACEFUL SHUTDOWN (Szybkie rozłączenie) ---
@@ -169,7 +211,6 @@ func main() {
 		<-c // Czeka, aż ktoś wyłączy Agenta (np. Ctrl+C)
 		log.Println("⚠️ Otrzymano sygnał wyłączenia! Zgłaszam offline do serwera...")
 
-		// Wysyłamy szybki strzał do backendu, że padamy (musisz obsłużyć ten endpoint na backendzie!)
 		offlineURL := fmt.Sprintf("%s/machines/%s/offline", BackendURL, AgentMAC)
 		http.Post(offlineURL, "application/json", nil)
 
@@ -242,33 +283,41 @@ func main() {
 			var cmd *exec.Cmd
 
 			switch appName {
-			case "vscode":
-				// --- KLUCZOWE POPRAWKI ---
+				case "vscode":
+					log.Println("📥 Rozpoczynam instalację VS Code Server...")
 
-				// 1. Zamiast os.Executable() używamy os.Getwd(), aby zablokować zjawisko znikających plików w 'go run'
-				agentDir, err := os.Getwd()
-				if err != nil {
-					log.Println("❌ Błąd pobierania ścieżki:", err)
-					http.Error(w, "Błąd ścieżki", http.StatusInternalServerError)
-					return
-				}
-				workspacePath := filepath.Join(agentDir, "workspace")
+					// Pobieramy bieżący katalog roboczy (na Windowsie to będzie np. C:\agent)
+					agentDir, err := os.Getwd()
+					if err != nil {
+						log.Println("❌ Błąd pobierania ścieżki:", err)
+						http.Error(w, "Błąd ścieżki", http.StatusInternalServerError)
+						return
+					}
+					workspacePath := filepath.Join(agentDir, "workspace")
 
-				// 2. Tworzymy folder i dajemy uprawnienia 777 (każdy może czytać/pisać) - eliminuje błędy dostępu z obu stron
-				os.MkdirAll(workspacePath, 0777)
-				exec.Command("chmod", "777", workspacePath).Run()
+					// Tworzymy folder. Na Linux/Windows os.MkdirAll zadziała poprawnie.
+					err = os.MkdirAll(workspacePath, 0777)
+					if err != nil {
+						log.Println("❌ Nie udało się stworzyć folderu workspace:", err)
+					}
 
-				// 3. Usuwamy --user=0:0, ale zostawiamy PUID=0 i PGID=0 (dzięki temu struktura kontenera s6-overlay ładuje się poprawnie, a Ty jesteś rootem)
-				cmd = exec.Command("docker", "run", "-d",
-					"--name=app-vscode",
-					"-e", "PUID=0",
-					"-e", "PGID=0",
-					"-e", "TZ=Europe/Warsaw",
-					"-e", "PASSWORD=admin",
-					"-p", "8443:8443",
-					"-v", workspacePath+":/config/workspace",
-					"--restart", "unless-stopped",
-					"linuxserver/code-server")
+					// chmod istnieje tylko na Linux/macOS. Na Windowsie pomijamy.
+					if runtime.GOOS != "windows" {
+						exec.Command("chmod", "777", workspacePath).Run()
+					}
+
+					// Docker Desktop na Windowsie poradzi sobie z konwersją ścieżki
+					// z "C:\path" na format kontenera, o ile użyjesz filepath.ToSlash() lub Docker Desktop ma włączone gRPC FUSE.
+					cmd = exec.Command("docker", "run", "-d",
+							   "--name=app-vscode",
+							   "-e", "PUID=1000",
+							   "-e", "PGID=1000",
+							   "-e", "TZ=Europe/Warsaw",
+							   "-e", "PASSWORD=admin",
+							   "-p", "8443:8443",
+							   "-v", workspacePath+":/config/workspace",
+							   "--restart", "unless-stopped",
+							   "linuxserver/code-server")
 
 			case "ai-assistant":
 				log.Println("🧠 Rozpoczynam instalację AI Assistant (Ollama + Open WebUI)...")
@@ -324,7 +373,7 @@ func main() {
 	var lastTime time.Time
 
 	for {
-		registerURL := fmt.Sprintf("%s/machines?name=%s&ip=%s&mac=%s&tailscale_ip=%s", BackendURL, AgentName, AgentIP, AgentMAC, AgentTailscaleIP)
+		registerURL := fmt.Sprintf("%s/machines/?name=%s&ip=%s&mac=%s&tailscale_ip=%s", BackendURL, AgentName, AgentIP, AgentMAC, AgentTailscaleIP)
 		resp, err := http.Post(registerURL, "application/json", nil)
 		if err != nil {
 			log.Println("❌ Błąd połączenia z backendem:", err)
@@ -404,7 +453,7 @@ func main() {
 
 		jsonData, _ := json.Marshal(metrics)
 
-		metricsURL := fmt.Sprintf("%s/machines/%s/metrics", BackendURL, AgentMAC)
+		metricsURL := fmt.Sprintf("%s/machines/%s/metrics/", BackendURL, AgentMAC)
 		mResp, mErr := http.Post(metricsURL, "application/json", bytes.NewBuffer(jsonData))
 
 		if mErr != nil {
