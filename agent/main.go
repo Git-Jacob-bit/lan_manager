@@ -67,54 +67,71 @@ func handleTerminal(w http.ResponseWriter, r *http.Request) {
 	log.Printf("🔌 Nawiązano połączenie z Terminalem (%s)!", runtime.GOOS)
 
 	var cmd *exec.Cmd
-	var shell string
-
-	// 1. Wybór powłoki w zależności od systemu
 	if runtime.GOOS == "windows" {
-		shell = "powershell.exe"
-		cmd = exec.Command(shell, "-NoLogo")
+		cmd = exec.Command("powershell.exe", "-NoLogo")
 	} else {
-		shell = "bash"
-		cmd = exec.Command(shell, "-l")
+		cmd = exec.Command("bash", "-l")
 		cmd.Env = append(os.Environ(), "TERM=xterm-256color")
 	}
 
-	// 2. Obsługa PTY dla Linux vs Pipes dla Windows
 	if runtime.GOOS != "windows" {
-		// LOGIKA DLA LINUX (z użyciem PTY)
+		// LOGIKA DLA LINUX
 		ptmx, err := pty.Start(cmd)
 		if err != nil {
 			log.Println("❌ Błąd PTY:", err)
+			ws.Close()
 			return
 		}
+
 		defer func() {
 			ptmx.Close()
 			cmd.Process.Kill()
 			ws.Close()
+			log.Println("🔌 Zamknięto terminal Linux.")
 		}()
 
-		// Kopiowanie danych PTY <-> WS
-		go func() { io.Copy(ws.UnderlyingConn(), ptmx) }()
-		go func() { io.Copy(ptmx, ws.UnderlyingConn()) }()
+		// Czytanie z PTY -> wysyłanie do WebSocket
+		go func() {
+			buf := make([]byte, 1024)
+			for {
+				n, err := ptmx.Read(buf)
+				if err != nil {
+					return
+				}
+				if err := ws.WriteMessage(websocket.BinaryMessage, buf[:n]); err != nil {
+					return
+				}
+			}
+		}()
+
+		// Czytanie z WebSocket -> wysyłanie do PTY
+		for {
+			_, msg, err := ws.ReadMessage()
+			if err != nil {
+				break
+			}
+			ptmx.Write(msg)
+		}
 
 	} else {
-		// LOGIKA DLA WINDOWS (standardowe potoki)
+		// --- LOGIKA DLA WINDOWS ---
 		stdin, _ := cmd.StdinPipe()
 		stdout, _ := cmd.StdoutPipe()
 		stderr, _ := cmd.StderrPipe()
 
 		err := cmd.Start()
 		if err != nil {
-			log.Println("❌ Błąd uruchamiania procesu:", err)
+			log.Println("❌ Błąd uruchamiania PowerShell:", err)
 			return
 		}
 
 		defer func() {
 			cmd.Process.Kill()
 			ws.Close()
+			log.Println("🔌 Zamknięto terminal Windows.")
 		}()
 
-		// Czytanie z PowerShell -> Wysyłanie do przeglądarki
+		// Czytanie z Pipes -> WebSocket
 		go func() {
 			combined := io.MultiReader(stdout, stderr)
 			buf := make([]byte, 1024)
@@ -127,7 +144,7 @@ func handleTerminal(w http.ResponseWriter, r *http.Request) {
 			}
 		}()
 
-		// Czytanie z przeglądarki -> Wysyłanie do PowerShell
+		// WebSocket -> Pipes
 		for {
 			_, msg, err := ws.ReadMessage()
 			if err != nil {
@@ -310,45 +327,45 @@ func main() {
 					// z "C:\path" na format kontenera, o ile użyjesz filepath.ToSlash() lub Docker Desktop ma włączone gRPC FUSE.
 					cmd = exec.Command("docker", "run", "-d",
 							   "--name=app-vscode",
-							   "-e", "PUID=1000",
-							   "-e", "PGID=1000",
-							   "-e", "TZ=Europe/Warsaw",
-							   "-e", "PASSWORD=admin",
-							   "-p", "8443:8443",
-							   "-v", workspacePath+":/config/workspace",
-							   "--restart", "unless-stopped",
-							   "linuxserver/code-server")
+			"-e", "PUID=1000",
+			"-e", "PGID=1000",
+			"-e", "TZ=Europe/Warsaw",
+			"-e", "PASSWORD=admin",
+			"-p", "8443:8443",
+			"-v", workspacePath+":/config/workspace",
+			"--restart", "unless-stopped",
+			"linuxserver/code-server")
 
-			case "ai-assistant":
-				log.Println("🧠 Rozpoczynam instalację AI Assistant (Ollama + Open WebUI)...")
+				case "ai-assistant":
+					log.Println("🧠 Rozpoczynam instalację AI Assistant (Ollama + Open WebUI)...")
 
-				// Używamy obrazu All-in-One.
-				// Port 3000: Interfejs WWW dla Ciebie
-				// Port 11434: API Ollamy (pod automatyzacje w tle)
-				cmd = exec.Command("docker", "run", "-d",
-					"--name=app-ai-assistant",
-					"--gpus", "all",
-					"-p", "3000:8080",
-					"-p", "11434:11434",
-					"-v", "open-webui-data:/app/backend/data",
-					"-v", "ollama-data:/root/.ollama",
-					"--restart", "unless-stopped",
-					"ghcr.io/open-webui/open-webui:ollama")
+					// Używamy obrazu All-in-One.
+					// Port 3000: Interfejs WWW dla Ciebie
+					// Port 11434: API Ollamy (pod automatyzacje w tle)
+					cmd = exec.Command("docker", "run", "-d",
+							   "--name=app-ai-assistant",
+			"--gpus", "all",
+			"-p", "3000:8080",
+			"-p", "11434:11434",
+			"-v", "open-webui-data:/app/backend/data",
+			"-v", "ollama-data:/root/.ollama",
+			"--restart", "unless-stopped",
+			"ghcr.io/open-webui/open-webui:ollama")
 
-			case "whisper-asr":
-				log.Println("🎙️ Rozpoczynam instalację Whisper AI (Transkrypcja Audio na GPU)...")
-				cmd = exec.Command("docker", "run", "-d",
-					"--name=app-whisper-asr",
-					"--gpus", "all", // <--- 1. DAJEMY DOSTĘP DO KARTY RTX
-					"-p", "9000:9000",
-					"-e", "ASR_MODEL=medium", // <--- 2. WYBIERAMY MODEL (small lub medium)
+				case "whisper-asr":
+					log.Println("🎙️ Rozpoczynam instalację Whisper AI (Transkrypcja Audio na GPU)...")
+					cmd = exec.Command("docker", "run", "-d",
+							   "--name=app-whisper-asr",
+			"--gpus", "all", // <--- 1. DAJEMY DOSTĘP DO KARTY RTX
+			"-p", "9000:9000",
+			"-e", "ASR_MODEL=medium", // <--- 2. WYBIERAMY MODEL (small lub medium)
 					"-e", "ASR_ENGINE=openai_whisper",
-					"--restart", "unless-stopped",
-					"onerahmet/openai-whisper-asr-webservice:latest-gpu") // <--- 3. UŻYWAMY WERSJI OBRAZU Z OBSŁUGĄ KART GRAFICZNYCH
+			"--restart", "unless-stopped",
+			"onerahmet/openai-whisper-asr-webservice:latest-gpu") // <--- 3. UŻYWAMY WERSJI OBRAZU Z OBSŁUGĄ KART GRAFICZNYCH
 
-			default:
-				http.Error(w, "Nieznana aplikacja", http.StatusBadRequest)
-				return
+				default:
+					http.Error(w, "Nieznana aplikacja", http.StatusBadRequest)
+					return
 			}
 
 			output, err := cmd.CombinedOutput()
@@ -460,7 +477,7 @@ func main() {
 			log.Println("❌ Błąd wysyłania metryk:", mErr)
 		} else {
 			log.Printf("✅ Wysłano metryki | CPU: %.1f%% | RAM: %.1f%% | Dysk: %s | Kontenery: %d\n",
-				metrics.CPUUsage, metrics.RAMUsage, metrics.DiskHealth, len(metrics.Dockers))
+				   metrics.CPUUsage, metrics.RAMUsage, metrics.DiskHealth, len(metrics.Dockers))
 			mResp.Body.Close()
 		}
 
