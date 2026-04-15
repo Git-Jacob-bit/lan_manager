@@ -17,7 +17,7 @@ import (
 	"time"
 
 	"github.com/creack/pty"
-	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/container" // <--- DODAJ TĘ LINIJKĘ
 	"github.com/docker/docker/client"
 	"github.com/gorilla/websocket"
 	"github.com/shirou/gopsutil/v3/cpu"
@@ -48,6 +48,22 @@ type Metrics struct {
 	DiskHealth string        `json:"disk_health"`
 	Dockers    []DockerStats `json:"dockers"`
 }
+
+// --- Nowa struktura do strumieniowania logów na żywo ---
+type flushWriter struct {
+	w http.ResponseWriter
+	f http.Flusher
+}
+
+func (fw *flushWriter) Write(p []byte) (n int, err error) {
+	n, err = fw.w.Write(p)
+	if fw.f != nil {
+		fw.f.Flush() // Wypycha dane natychmiast do przeglądarki
+	}
+	return
+}
+
+// --------------------------------------------------------
 
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
@@ -230,35 +246,42 @@ func main() {
 
 		http.HandleFunc("/apps/install", func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Access-Control-Allow-Origin", "*")
-			w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS, GET")
+
+			// 1. Zmieniamy nagłówki, żeby przeglądarka wiedziała, że to "niekończący się" strumień tekstu
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			w.Header().Set("Transfer-Encoding", "chunked")
+
 			if r.Method == "OPTIONS" {
 				w.WriteHeader(http.StatusOK)
 				return
 			}
 
+			// 2. Inicjalizacja strumieniowania
+			flusher, ok := w.(http.Flusher)
+			if !ok {
+				http.Error(w, "Streaming unsupported", http.StatusInternalServerError)
+				return
+			}
+			fw := &flushWriter{w: w, f: flusher}
+
 			appName := r.URL.Query().Get("id")
-			log.Printf("📥 Rozpoczynam instalację aplikacji: %s...\n", appName)
+			fmt.Fprintf(fw, "📥 Rozpoczynam przygotowania dla aplikacji: %s...\n", appName)
 
 			var cmd *exec.Cmd
 
 			switch appName {
 			case "vscode":
-				// --- KLUCZOWE POPRAWKI ---
-
-				// 1. Zamiast os.Executable() używamy os.Getwd(), aby zablokować zjawisko znikających plików w 'go run'
+				fmt.Fprintf(fw, "📂 Konfiguracja folderów roboczych na serwerze...\n")
 				agentDir, err := os.Getwd()
 				if err != nil {
-					log.Println("❌ Błąd pobierania ścieżki:", err)
-					http.Error(w, "Błąd ścieżki", http.StatusInternalServerError)
+					fmt.Fprintf(fw, "❌ Błąd pobierania ścieżki: %v\n", err)
 					return
 				}
 				workspacePath := filepath.Join(agentDir, "workspace")
-
-				// 2. Tworzymy folder i dajemy uprawnienia 777 (każdy może czytać/pisać) - eliminuje błędy dostępu z obu stron
 				os.MkdirAll(workspacePath, 0777)
 				exec.Command("chmod", "777", workspacePath).Run()
 
-				// 3. Usuwamy --user=0:0, ale zostawiamy PUID=0 i PGID=0 (dzięki temu struktura kontenera s6-overlay ładuje się poprawnie, a Ty jesteś rootem)
 				cmd = exec.Command("docker", "run", "-d",
 					"--name=app-vscode",
 					"-e", "PUID=0",
@@ -271,11 +294,7 @@ func main() {
 					"linuxserver/code-server")
 
 			case "ai-assistant":
-				log.Println("🧠 Rozpoczynam instalację AI Assistant (Ollama + Open WebUI)...")
-
-				// Używamy obrazu All-in-One.
-				// Port 3000: Interfejs WWW dla Ciebie
-				// Port 11434: API Ollamy (pod automatyzacje w tle)
+				fmt.Fprintf(fw, "🧠 Przygotowanie AI Assistant (Ollama + Open WebUI)...\n")
 				cmd = exec.Command("docker", "run", "-d",
 					"--name=app-ai-assistant",
 					"--gpus", "all",
@@ -287,30 +306,35 @@ func main() {
 					"ghcr.io/open-webui/open-webui:ollama")
 
 			case "whisper-asr":
-				log.Println("🎙️ Rozpoczynam instalację Whisper AI (Transkrypcja Audio na GPU)...")
+				fmt.Fprintf(fw, "🎙️ Przygotowanie Whisper AI (Transkrypcja)...\n")
 				cmd = exec.Command("docker", "run", "-d",
 					"--name=app-whisper-asr",
-					"--gpus", "all", // <--- 1. DAJEMY DOSTĘP DO KARTY RTX
+					"--gpus", "all",
 					"-p", "9000:9000",
-					"-e", "ASR_MODEL=medium", // <--- 2. WYBIERAMY MODEL (small lub medium)
+					"-e", "ASR_MODEL=medium",
 					"-e", "ASR_ENGINE=openai_whisper",
 					"--restart", "unless-stopped",
-					"onerahmet/openai-whisper-asr-webservice:latest-gpu") // <--- 3. UŻYWAMY WERSJI OBRAZU Z OBSŁUGĄ KART GRAFICZNYCH
+					"onerahmet/openai-whisper-asr-webservice:latest-gpu")
 
 			default:
-				http.Error(w, "Nieznana aplikacja", http.StatusBadRequest)
+				fmt.Fprintf(fw, "❌ Nieznana aplikacja\n")
 				return
 			}
 
-			output, err := cmd.CombinedOutput()
+			// --- 3. KLUCZOWA ZMIANA ---
+			// Podpinamy nasz strumień pod standardowe wyjście komendy z Dockera!
+			cmd.Stdout = fw
+			cmd.Stderr = fw
+
+			fmt.Fprintf(fw, "🚀 Wykonywanie komendy w Dockerze (pobieranie obrazu może chwilę potrwać)...\n\n")
+
+			// Zamiast CombinedOutput, używamy po prostu Run()
+			err := cmd.Run()
 			if err != nil {
-				log.Printf("❌ Błąd instalacji %s: %v\nWyjście: %s", appName, err, string(output))
-				http.Error(w, "Błąd instalacji: "+string(output), http.StatusInternalServerError)
-				return
+				fmt.Fprintf(fw, "\n❌ Błąd instalacji: %v\n", err)
+			} else {
+				fmt.Fprintf(fw, "\n✅ Aplikacja %s pomyślnie zainstalowana i uruchomiona!\n", appName)
 			}
-
-			log.Printf("✅ Aplikacja %s pomyślnie zainstalowana!", appName)
-			w.WriteHeader(http.StatusOK)
 		})
 
 		http.HandleFunc("/ws", handleTerminal)
@@ -374,9 +398,13 @@ func main() {
 
 		var dockerList []DockerStats
 		cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
-		if err == nil {
-			containers, err := cli.ContainerList(context.Background(), types.ContainerListOptions{All: true})
-			if err == nil {
+		if err != nil {
+			log.Println("❌ Błąd połączenia z Dockerem (inicjalizacja):", err)
+		} else {
+			containers, err := cli.ContainerList(context.Background(), container.ListOptions{All: true})
+			if err != nil {
+				log.Println("❌ Błąd pobierania listy kontenerów:", err)
+			} else {
 				for _, c := range containers {
 					name := "unknown"
 					if len(c.Names) > 0 {

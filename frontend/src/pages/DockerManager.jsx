@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { motion } from 'framer-motion';
-import { ArrowLeft, Play, Square, RefreshCw, Loader2, Server } from 'lucide-react';
+import { ArrowLeft, Play, Square, RefreshCw, Loader2, Server, Lock } from 'lucide-react';
 
 const API_BASE = `http://${window.location.hostname}:8000`;
 
@@ -11,7 +11,14 @@ function DockerManager() {
     const navigate = useNavigate();
     const [containers, setContainers] = useState([]);
     const [loading, setLoading] = useState(true);
-    const [actionLoading, setActionLoading] = useState(null); // ID kontenera, który jest w trakcie akcji
+    const [actionLoading, setActionLoading] = useState(null); 
+
+    // Funkcja sprawdzająca czy kontener należy do naszej aplikacji
+    const isProtected = (containerName) => {
+        const name = containerName.toLowerCase();
+        // Tutaj wpisz fragmenty nazw kontenerów, których NIE CHCESZ wyłączać
+        return name.includes('lan_machine')
+    };
 
     const fetchContainers = async () => {
         try {
@@ -27,6 +34,12 @@ function DockerManager() {
     };
 
     const doAction = async (containerName, action) => {
+        // Dodatkowe zabezpieczenie, gdyby ktoś wywołał funkcję z konsoli
+        if (isProtected(containerName)) {
+            alert("Akcja zablokowana: Nie można modyfikować głównych kontenerów aplikacji.");
+            return;
+        }
+
         setActionLoading(containerName);
         const targetState = action === 'start' ? 'running' : 'exited';
         try {
@@ -35,20 +48,18 @@ function DockerManager() {
                 action: action
             });
 
-            // 2. Czekaj, aż stan się zmieni (pętla sprawdzająca)
             let isReady = false;
             let attempts = 0;
 
-            while (!isReady && attempts < 10) { // Maksymalnie 10 prób
-                await new Promise(resolve => setTimeout(resolve, 800)); // Czekaj 800ms
+            while (!isReady && attempts < 10) { 
+                await new Promise(resolve => setTimeout(resolve, 800)); 
 
                 const res = await axios.get(`${API_BASE}/machines/${mac}/metrics?limit=1`);
                 const updatedContainer = res.data[0]?.dockers.find(c => c.name === containerName);
 
-                // Sprawdź czy stan jest zgodny z oczekiwanym
                 if (updatedContainer && updatedContainer.state === targetState) {
                     isReady = true;
-                    setContainers(res.data[0].dockers); // Aktualizujemy listę
+                    setContainers(res.data[0].dockers); 
                 }
                 attempts++;
             }
@@ -107,7 +118,11 @@ function DockerManager() {
                                         Status: {d.status}
                                     </div>
                                     <div className="flex justify-end gap-2 pt-2 border-t border-slate-700/50 mt-1">
-                                        {actionLoading === d.name ? (
+                                        {isProtected(d.name) ? (
+                                            <div className="flex items-center gap-1.5 px-4 py-2 text-slate-500 text-sm font-semibold">
+                                                <Lock size={16} /> Chroniony
+                                            </div>
+                                        ) : actionLoading === d.name ? (
                                             <div className="py-2 px-4"><Loader2 className="animate-spin text-slate-500" size={18} /></div>
                                         ) : (
                                             <>
@@ -155,8 +170,12 @@ function DockerManager() {
                                                     {d.state}
                                                 </span>
                                             </td>
-                                            <td className="p-6 text-right flex justify-end gap-2">
-                                                {actionLoading === d.name ? (
+                                            <td className="p-6 text-right flex justify-end gap-2 items-center">
+                                                {isProtected(d.name) ? (
+                                                    <div className="p-2 text-slate-600 flex items-center justify-center gap-2 text-sm font-medium" title="Kontener systemowy - brak możliwości edycji">
+                                                        <Lock size={16} /> Chroniony
+                                                    </div>
+                                                ) : actionLoading === d.name ? (
                                                     <Loader2 className="animate-spin text-slate-500" size={20} />
                                                 ) : (
                                                     <>
