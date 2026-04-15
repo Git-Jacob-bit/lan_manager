@@ -1,10 +1,9 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import axios from 'axios';
-import { ArrowLeft, CheckCircle2, Loader2, Download, Package, ExternalLink } from 'lucide-react';
+import { ArrowLeft, CheckCircle2, Loader2, Download, Package, ExternalLink, X } from 'lucide-react';
 import { motion } from 'framer-motion';
 
-// 1. ZAKTUALIZOWANA LISTA APLIKACJI (Dodane porty i nowe ID)
 const APPS = [
     {
         id: 'vscode',
@@ -14,11 +13,11 @@ const APPS = [
         port: 8443
     },
     {
-        id: 'ai-assistant', // <--- Zmienione na to samo ID, co w Agencie w Go
+        id: 'ai-assistant',
         name: 'Ollama AI Assistant',
         icon: '🧠',
         description: 'Twój prywatny asystent AI i analizator dokumentów (Open WebUI + LLM). Dane nie opuszczają sieci LAN.',
-        port: 3000 // <--- Port, na którym działa interfejs WebUI
+        port: 3000 
     },
     {
         id: 'whisper-asr',
@@ -35,7 +34,14 @@ const AppManagerPage = () => {
     
     const [machine, setMachine] = useState(null);
     const [loading, setLoading] = useState(true);
+    
+    // Zmienne do instalacji i terminala
     const [installingApp, setInstallingApp] = useState(null);
+    const [installLogs, setInstallLogs] = useState("");
+    const [showTerminal, setShowTerminal] = useState(false);
+    
+    // Referencja do zjeżdżania terminala na dół
+    const terminalEndRef = useRef(null);
 
     const fetchMachineData = async () => {
         try {
@@ -54,12 +60,31 @@ const AppManagerPage = () => {
         return () => clearInterval(interval);
     }, [mac]);
 
+    // Zabezpieczenie przed przypadkowym odświeżeniem/wyjściem ze strony
+    useEffect(() => {
+        const handleBeforeUnload = (e) => {
+            if (installingApp) {
+                e.preventDefault();
+                e.returnValue = ''; // Wymagane przez nowoczesne przeglądarki do pokazania alertu
+            }
+        };
+
+        window.addEventListener('beforeunload', handleBeforeUnload);
+        return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+    }, [installingApp]);
+
+    // Automatyczne scrollowanie terminala w dół, gdy pojawiają się nowe logi
+    useEffect(() => {
+        if (terminalEndRef.current) {
+            terminalEndRef.current.scrollIntoView({ behavior: "smooth" });
+        }
+    }, [installLogs]);
+
     const isAppInstalled = (appId) => {
         if (!machine || !machine.dockers) return false;
         return machine.dockers.some(container => container.name.includes(appId));
     };
 
-    // 2. WYCIĄGNIĘTA LOGIKA ADRESU IP (Przydaje się do instalacji ORAZ do przycisku Otwórz)
     const getTargetIp = () => {
         if (!machine) return window.location.hostname;
         const currentHost = window.location.hostname;
@@ -69,24 +94,40 @@ const AppManagerPage = () => {
         return machine.ip || currentHost;
     };
 
+    // ZMODYFIKOWANA FUNKCJA INSTALACJI (Obsługa Strumieni)
     const handleInstall = async (appId) => {
         if (!machine) return;
         setInstallingApp(appId);
+        setInstallLogs(""); // Czyścimy logi
+        setShowTerminal(true); // Otwieramy terminal
 
         const targetHost = getTargetIp();
 
         try {
-            await axios.post(`http://${targetHost}:8001/apps/install?id=${appId}`);
-            
-            // Usunąłem Alert, żeby nie blokował przeglądarki, użytkownik widzi zmianę na przycisku
-            setTimeout(() => {
-                fetchMachineData();
-                setInstallingApp(null);
-            }, 3000);
+            const response = await fetch(`http://${targetHost}:8001/apps/install?id=${appId}`, {
+                method: 'POST',
+            });
+
+            // Odczyt strumieniowy
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder("utf-8");
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                
+                const chunk = decoder.decode(value, { stream: true });
+                setInstallLogs((prev) => prev + chunk);
+            }
+
+            // Strumień zakończony
+            fetchMachineData();
+            setInstallingApp(null);
+            setInstallLogs((prev) => prev + "\n\n✅ Proces zakończony.");
 
         } catch (err) {
             console.error(`Błąd instalacji ${appId}:`, err);
-            alert(`❌ Błąd instalacji aplikacji. Sprawdź, czy maszyna jest online.`);
+            setInstallLogs((prev) => prev + `\n\n❌ Błąd komunikacji z serwerem: ${err.message}`);
             setInstallingApp(null);
         }
     };
@@ -102,8 +143,43 @@ const AppManagerPage = () => {
     return (
         <div className="min-h-screen bg-slate-950 text-white flex flex-col p-6">
             
+            {/* --- MODAL Z TERMINALEM --- */}
+            {showTerminal && (
+                <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
+                    <div className="bg-slate-900 border border-slate-700 w-full max-w-4xl rounded-xl shadow-2xl flex flex-col h-[75vh]">
+                        <div className="p-4 border-b border-slate-800 flex justify-between items-center bg-slate-950 rounded-t-xl">
+                            <h3 className="font-bold text-slate-200 flex items-center gap-2">
+                                <Loader2 className={`w-5 h-5 ${installingApp ? 'animate-spin text-blue-500' : 'hidden'}`} />
+                                Terminal Instalatora
+                            </h3>
+                            <button 
+                                onClick={() => setShowTerminal(false)} 
+                                className="flex items-center gap-2 px-3 py-1.5 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 rounded-lg transition-colors"
+                            >
+                                <X size={16} /> Zamknij
+                            </button>
+                        </div>
+                        
+                        {/* Okno z logami */}
+                        <div className="p-4 flex-1 overflow-auto bg-black font-mono text-sm text-green-400 whitespace-pre-wrap leading-relaxed tracking-wide">
+                            {installLogs || "Oczekiwanie na odpowiedź serwera..."}
+                            <div ref={terminalEndRef} />
+                        </div>
+                    </div>
+                </div>
+            )}
+            
             <div className="flex justify-between items-center mb-8">
-                <button onClick={() => navigate(-1)} className="flex items-center gap-2 bg-slate-900 hover:bg-slate-800 transition-colors px-4 py-2 rounded-full border border-slate-800 shadow-md">
+                <button 
+                    onClick={() => {
+                        if (installingApp) {
+                            const czyWyjsc = window.confirm("Aplikacja nadal się instaluje. Czy na pewno chcesz opuścić stronę? Może to przerwać proces.");
+                            if (!czyWyjsc) return; // Jeśli użytkownik kliknie "Anuluj", przerywamy funkcję
+                        }
+                        navigate(-1); // Jeśli nie instaluje, lub kliknął "OK", nawigujemy
+                    }} 
+                    className="flex items-center gap-2 bg-slate-900 hover:bg-slate-800 transition-colors px-4 py-2 rounded-full border border-slate-800 shadow-md"
+                >
                     <ArrowLeft size={18} /> Powrót do Huba
                 </button>
                 
@@ -123,8 +199,6 @@ const AppManagerPage = () => {
                 {APPS.map((app) => {
                     const installed = isAppInstalled(app.id);
                     const isInstallingThis = installingApp === app.id;
-                    
-                    // 3. GENEROWANIE LINKU DO APLIKACJI
                     const appUrl = `http://${getTargetIp()}:${app.port}`;
 
                     return (
@@ -144,7 +218,6 @@ const AppManagerPage = () => {
                                 {app.description}
                             </p>
 
-                            {/* --- 4. ZAKTUALIZOWANY PRZYCISK OTWÓRZ / ZAINSTALUJ --- */}
                             {installed ? (
                                 <button 
                                     onClick={() => window.open(appUrl, '_blank')}
@@ -155,11 +228,11 @@ const AppManagerPage = () => {
                                 </button>
                             ) : (
                                 <button 
-                                    onClick={() => handleInstall(app.id)}
-                                    disabled={installingApp !== null}
+                                    onClick={() => isInstallingThis ? setShowTerminal(true) : handleInstall(app.id)}
+                                    disabled={installingApp !== null && !isInstallingThis}
                                     className={`w-full py-3 rounded-xl font-bold flex items-center justify-center gap-2 transition-all shadow-lg
                                         ${isInstallingThis 
-                                            ? 'bg-yellow-600 text-white cursor-wait' 
+                                            ? 'bg-yellow-600 hover:bg-yellow-500 text-white cursor-pointer' 
                                             : 'bg-blue-600 hover:bg-blue-500 text-white' 
                                         }
                                         ${installingApp !== null && !isInstallingThis ? 'opacity-50 cursor-not-allowed' : ''}
@@ -168,7 +241,7 @@ const AppManagerPage = () => {
                                     {isInstallingThis ? (
                                         <>
                                             <Loader2 className="animate-spin" size={20} />
-                                            Instalowanie...
+                                            Pokaż logi
                                         </>
                                     ) : (
                                         <>

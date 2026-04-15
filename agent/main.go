@@ -20,7 +20,7 @@ import (
 	"io"
 
 	"github.com/creack/pty"
-	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/container" // <--- DODAJ TĘ LINIJKĘ
 	"github.com/docker/docker/client"
 	"github.com/gorilla/websocket"
 	"github.com/shirou/gopsutil/v3/cpu"
@@ -51,6 +51,22 @@ type Metrics struct {
 	DiskHealth string        `json:"disk_health"`
 	Dockers    []DockerStats `json:"dockers"`
 }
+
+// --- Nowa struktura do strumieniowania logów na żywo ---
+type flushWriter struct {
+	w http.ResponseWriter
+	f http.Flusher
+}
+
+func (fw *flushWriter) Write(p []byte) (n int, err error) {
+	n, err = fw.w.Write(p)
+	if fw.f != nil {
+		fw.f.Flush() // Wypycha dane natychmiast do przeglądarki
+	}
+	return
+}
+
+// --------------------------------------------------------
 
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
@@ -288,14 +304,27 @@ func main() {
 
 		http.HandleFunc("/apps/install", func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Access-Control-Allow-Origin", "*")
-			w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS, GET")
+
+			// 1. Zmieniamy nagłówki, żeby przeglądarka wiedziała, że to "niekończący się" strumień tekstu
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			w.Header().Set("Transfer-Encoding", "chunked")
+
 			if r.Method == "OPTIONS" {
 				w.WriteHeader(http.StatusOK)
 				return
 			}
 
+			// 2. Inicjalizacja strumieniowania
+			flusher, ok := w.(http.Flusher)
+			if !ok {
+				http.Error(w, "Streaming unsupported", http.StatusInternalServerError)
+				return
+			}
+			fw := &flushWriter{w: w, f: flusher}
+
 			appName := r.URL.Query().Get("id")
-			log.Printf("📥 Rozpoczynam instalację aplikacji: %s...\n", appName)
+			fmt.Fprintf(fw, "📥 Rozpoczynam przygotowania dla aplikacji: %s...\n", appName)
 
 			var cmd *exec.Cmd
 
@@ -368,15 +397,20 @@ func main() {
 					return
 			}
 
-			output, err := cmd.CombinedOutput()
-			if err != nil {
-				log.Printf("❌ Błąd instalacji %s: %v\nWyjście: %s", appName, err, string(output))
-				http.Error(w, "Błąd instalacji: "+string(output), http.StatusInternalServerError)
-				return
-			}
+			// --- 3. KLUCZOWA ZMIANA ---
+			// Podpinamy nasz strumień pod standardowe wyjście komendy z Dockera!
+			cmd.Stdout = fw
+			cmd.Stderr = fw
 
-			log.Printf("✅ Aplikacja %s pomyślnie zainstalowana!", appName)
-			w.WriteHeader(http.StatusOK)
+			fmt.Fprintf(fw, "🚀 Wykonywanie komendy w Dockerze (pobieranie obrazu może chwilę potrwać)...\n\n")
+
+			// Zamiast CombinedOutput, używamy po prostu Run()
+			err := cmd.Run()
+			if err != nil {
+				fmt.Fprintf(fw, "\n❌ Błąd instalacji: %v\n", err)
+			} else {
+				fmt.Fprintf(fw, "\n✅ Aplikacja %s pomyślnie zainstalowana i uruchomiona!\n", appName)
+			}
 		})
 
 		http.HandleFunc("/ws", handleTerminal)
@@ -440,9 +474,13 @@ func main() {
 
 		var dockerList []DockerStats
 		cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
-		if err == nil {
-			containers, err := cli.ContainerList(context.Background(), types.ContainerListOptions{All: true})
-			if err == nil {
+		if err != nil {
+			log.Println("❌ Błąd połączenia z Dockerem (inicjalizacja):", err)
+		} else {
+			containers, err := cli.ContainerList(context.Background(), container.ListOptions{All: true})
+			if err != nil {
+				log.Println("❌ Błąd pobierania listy kontenerów:", err)
+			} else {
 				for _, c := range containers {
 					name := "unknown"
 					if len(c.Names) > 0 {
