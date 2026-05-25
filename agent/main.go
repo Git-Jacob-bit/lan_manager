@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -15,6 +16,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"runtime"
+	"io"
 
 	"github.com/creack/pty"
 	"github.com/docker/docker/api/types/container" // <--- DODAJ TĘ LINIJKĘ
@@ -27,9 +30,9 @@ import (
 )
 
 // Konfiguracja
-const (
-	BackendURL = "http://localhost:8000"
-)
+
+var BackendURL = "http://localhost:8000"
+
 
 // Struktura dla pojedynczego kontenera
 type DockerStats struct {
@@ -70,7 +73,6 @@ var upgrader = websocket.Upgrader{
 		return true
 	},
 }
-
 func handleTerminal(w http.ResponseWriter, r *http.Request) {
 	ws, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -78,49 +80,94 @@ func handleTerminal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Println("🔌 Nawiązano połączenie z Terminalem (WebSocket)!")
+	log.Printf("🔌 Nawiązano połączenie z Terminalem (%s)!", runtime.GOOS)
 
-	// 1. Wymuszenie trybu logowania i odpowiedniego terminala (naprawia brak promptu i kolorów)
-	cmd := exec.Command("bash", "-l")
-	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
-
-	ptmx, err := pty.Start(cmd)
-	if err != nil {
-		log.Println("❌ Błąd uruchamiania PTY:", err)
-		ws.Close()
-		return
+	var cmd *exec.Cmd
+	if runtime.GOOS == "windows" {
+		cmd = exec.Command("powershell.exe", "-NoLogo")
+	} else {
+		cmd = exec.Command("bash", "-l")
+		cmd.Env = append(os.Environ(), "TERM=xterm-256color")
 	}
 
-	// 2. KLUCZOWE: Zamykamy deskryptor ORAZ zabijamy proces Bash!
-	// To eliminuje problem zombie i błąd "file already closed"
-	defer func() {
-		ptmx.Close()
-		cmd.Process.Kill()
-		ws.Close()
-		log.Println("🔌 Zamknięto połączenie z Terminalem i oczyszczono proces.")
-	}()
-
-	// Czytanie z PTY -> wysyłanie do WebSocket
-	go func() {
-		buf := make([]byte, 1024)
-		for {
-			n, err := ptmx.Read(buf)
-			if err != nil {
-				return // Wychodzimy po cichu, defer posprząta
-			}
-			if err := ws.WriteMessage(websocket.BinaryMessage, buf[:n]); err != nil {
-				return
-			}
-		}
-	}()
-
-	// Czytanie z WebSocket -> wysyłanie do PTY
-	for {
-		_, msg, err := ws.ReadMessage()
+	if runtime.GOOS != "windows" {
+		// LOGIKA DLA LINUX
+		ptmx, err := pty.Start(cmd)
 		if err != nil {
-			break // Przerwanie pętli odpala defer i zabija sesję
+			log.Println("❌ Błąd PTY:", err)
+			ws.Close()
+			return
 		}
-		ptmx.Write(msg)
+
+		defer func() {
+			ptmx.Close()
+			cmd.Process.Kill()
+			ws.Close()
+			log.Println("🔌 Zamknięto terminal Linux.")
+		}()
+
+		// Czytanie z PTY -> wysyłanie do WebSocket
+		go func() {
+			buf := make([]byte, 1024)
+			for {
+				n, err := ptmx.Read(buf)
+				if err != nil {
+					return
+				}
+				if err := ws.WriteMessage(websocket.BinaryMessage, buf[:n]); err != nil {
+					return
+				}
+			}
+		}()
+
+		// Czytanie z WebSocket -> wysyłanie do PTY
+		for {
+			_, msg, err := ws.ReadMessage()
+			if err != nil {
+				break
+			}
+			ptmx.Write(msg)
+		}
+
+	} else {
+		// --- LOGIKA DLA WINDOWS ---
+		stdin, _ := cmd.StdinPipe()
+		stdout, _ := cmd.StdoutPipe()
+		stderr, _ := cmd.StderrPipe()
+
+		err := cmd.Start()
+		if err != nil {
+			log.Println("❌ Błąd uruchamiania PowerShell:", err)
+			return
+		}
+
+		defer func() {
+			cmd.Process.Kill()
+			ws.Close()
+			log.Println("🔌 Zamknięto terminal Windows.")
+		}()
+
+		// Czytanie z Pipes -> WebSocket
+		go func() {
+			combined := io.MultiReader(stdout, stderr)
+			buf := make([]byte, 1024)
+			for {
+				n, err := combined.Read(buf)
+				if err != nil {
+					break
+				}
+				ws.WriteMessage(websocket.BinaryMessage, buf[:n])
+			}
+		}()
+
+		// WebSocket -> Pipes
+		for {
+			_, msg, err := ws.ReadMessage()
+			if err != nil {
+				break
+			}
+			stdin.Write(msg)
+		}
 	}
 }
 
@@ -173,9 +220,21 @@ func getTailscaleIP() string {
 }
 
 func main() {
+
+	// definicja flagi --server
+	serverFlag := flag.String("server", "", "Adres serwera backend (np. http://100.x.y.z:8000)")
+	flag.Parse()
+
+	// Najpierw sprawdzamy flagę, potem zmienną środowiskową, na końcu zostaje domyślny localhost
+	if *serverFlag != "" {
+		BackendURL = *serverFlag
+	} else if envAddr := os.Getenv("SERVER_URL"); envAddr != "" {
+		BackendURL = envAddr
+	}
+
 	AgentName, _ := os.Hostname()
 	AgentIP := getOutboundIP()
-	AgentMAC := getMacAddress() // <- O, tutaj!
+	AgentMAC := getMacAddress()
 	AgentTailscaleIP := getTailscaleIP()
 
 	// --- GRACEFUL SHUTDOWN (Szybkie rozłączenie) ---
@@ -185,7 +244,6 @@ func main() {
 		<-c // Czeka, aż ktoś wyłączy Agenta (np. Ctrl+C)
 		log.Println("⚠️ Otrzymano sygnał wyłączenia! Zgłaszam offline do serwera...")
 
-		// Wysyłamy szybki strzał do backendu, że padamy (musisz obsłużyć ten endpoint na backendzie!)
 		offlineURL := fmt.Sprintf("%s/machines/%s/offline", BackendURL, AgentMAC)
 		http.Post(offlineURL, "application/json", nil)
 
@@ -271,54 +329,72 @@ func main() {
 			var cmd *exec.Cmd
 
 			switch appName {
-			case "vscode":
-				fmt.Fprintf(fw, "📂 Konfiguracja folderów roboczych na serwerze...\n")
-				agentDir, err := os.Getwd()
-				if err != nil {
-					fmt.Fprintf(fw, "❌ Błąd pobierania ścieżki: %v\n", err)
-					return
-				}
-				workspacePath := filepath.Join(agentDir, "workspace")
-				os.MkdirAll(workspacePath, 0777)
-				exec.Command("chmod", "777", workspacePath).Run()
+				case "vscode":
+					log.Println("📥 Rozpoczynam instalację VS Code Server...")
 
-				cmd = exec.Command("docker", "run", "-d",
-					"--name=app-vscode",
-					"-e", "PUID=0",
-					"-e", "PGID=0",
-					"-e", "TZ=Europe/Warsaw",
-					"-e", "PASSWORD=admin",
-					"-p", "8443:8443",
-					"-v", workspacePath+":/config/workspace",
-					"--restart", "unless-stopped",
-					"linuxserver/code-server")
+					// Pobieramy bieżący katalog roboczy (na Windowsie to będzie np. C:\agent)
+					agentDir, err := os.Getwd()
+					if err != nil {
+						log.Println("❌ Błąd pobierania ścieżki:", err)
+						http.Error(w, "Błąd ścieżki", http.StatusInternalServerError)
+						return
+					}
+					workspacePath := filepath.Join(agentDir, "workspace")
 
-			case "ai-assistant":
-				fmt.Fprintf(fw, "🧠 Przygotowanie AI Assistant (Ollama + Open WebUI)...\n")
-				cmd = exec.Command("docker", "run", "-d",
-					"--name=app-ai-assistant",
-					"--gpus", "all",
-					"-p", "3000:8080",
-					"-p", "11434:11434",
-					"-v", "open-webui-data:/app/backend/data",
-					"-v", "ollama-data:/root/.ollama",
-					"--restart", "unless-stopped",
-					"ghcr.io/open-webui/open-webui:ollama")
+					// Tworzymy folder. Na Linux/Windows os.MkdirAll zadziała poprawnie.
+					err = os.MkdirAll(workspacePath, 0777)
+					if err != nil {
+						log.Println("❌ Nie udało się stworzyć folderu workspace:", err)
+					}
 
-			case "whisper-asr":
-				fmt.Fprintf(fw, "🎙️ Przygotowanie Whisper AI (Transkrypcja)...\n")
-				cmd = exec.Command("docker", "run", "-d",
-					"--name=app-whisper-asr",
-					"--gpus", "all",
-					"-p", "9000:9000",
-					"-e", "ASR_MODEL=medium",
+					// chmod istnieje tylko na Linux/macOS. Na Windowsie pomijamy.
+					if runtime.GOOS != "windows" {
+						exec.Command("chmod", "777", workspacePath).Run()
+					}
+
+					// Docker Desktop na Windowsie poradzi sobie z konwersją ścieżki
+					// z "C:\path" na format kontenera, o ile użyjesz filepath.ToSlash() lub Docker Desktop ma włączone gRPC FUSE.
+					cmd = exec.Command("docker", "run", "-d",
+							   "--name=app-vscode",
+			"-e", "PUID=1000",
+			"-e", "PGID=1000",
+			"-e", "TZ=Europe/Warsaw",
+			"-e", "PASSWORD=admin",
+			"-p", "8443:8443",
+			"-v", workspacePath+":/config/workspace",
+			"--restart", "unless-stopped",
+			"linuxserver/code-server")
+
+				case "ai-assistant":
+					log.Println("🧠 Rozpoczynam instalację AI Assistant (Ollama + Open WebUI)...")
+
+					// Używamy obrazu All-in-One.
+					// Port 3000: Interfejs WWW dla Ciebie
+					// Port 11434: API Ollamy (pod automatyzacje w tle)
+					cmd = exec.Command("docker", "run", "-d",
+							   "--name=app-ai-assistant",
+			"--gpus", "all",
+			"-p", "3000:8080",
+			"-p", "11434:11434",
+			"-v", "open-webui-data:/app/backend/data",
+			"-v", "ollama-data:/root/.ollama",
+			"--restart", "unless-stopped",
+			"ghcr.io/open-webui/open-webui:ollama")
+
+				case "whisper-asr":
+					log.Println("🎙️ Rozpoczynam instalację Whisper AI (Transkrypcja Audio na GPU)...")
+					cmd = exec.Command("docker", "run", "-d",
+							   "--name=app-whisper-asr",
+			"--gpus", "all", // <--- 1. DAJEMY DOSTĘP DO KARTY RTX
+			"-p", "9000:9000",
+			"-e", "ASR_MODEL=medium", // <--- 2. WYBIERAMY MODEL (small lub medium)
 					"-e", "ASR_ENGINE=openai_whisper",
-					"--restart", "unless-stopped",
-					"onerahmet/openai-whisper-asr-webservice:latest-gpu")
+			"--restart", "unless-stopped",
+			"onerahmet/openai-whisper-asr-webservice:latest-gpu") // <--- 3. UŻYWAMY WERSJI OBRAZU Z OBSŁUGĄ KART GRAFICZNYCH
 
-			default:
-				fmt.Fprintf(fw, "❌ Nieznana aplikacja\n")
-				return
+				default:
+					http.Error(w, "Nieznana aplikacja", http.StatusBadRequest)
+					return
 			}
 
 			// --- 3. KLUCZOWA ZMIANA ---
@@ -348,7 +424,7 @@ func main() {
 	var lastTime time.Time
 
 	for {
-		registerURL := fmt.Sprintf("%s/machines?name=%s&ip=%s&mac=%s&tailscale_ip=%s", BackendURL, AgentName, AgentIP, AgentMAC, AgentTailscaleIP)
+		registerURL := fmt.Sprintf("%s/machines/?name=%s&ip=%s&mac=%s&tailscale_ip=%s", BackendURL, AgentName, AgentIP, AgentMAC, AgentTailscaleIP)
 		resp, err := http.Post(registerURL, "application/json", nil)
 		if err != nil {
 			log.Println("❌ Błąd połączenia z backendem:", err)
@@ -432,14 +508,14 @@ func main() {
 
 		jsonData, _ := json.Marshal(metrics)
 
-		metricsURL := fmt.Sprintf("%s/machines/%s/metrics", BackendURL, AgentMAC)
+		metricsURL := fmt.Sprintf("%s/machines/%s/metrics/", BackendURL, AgentMAC)
 		mResp, mErr := http.Post(metricsURL, "application/json", bytes.NewBuffer(jsonData))
 
 		if mErr != nil {
 			log.Println("❌ Błąd wysyłania metryk:", mErr)
 		} else {
 			log.Printf("✅ Wysłano metryki | CPU: %.1f%% | RAM: %.1f%% | Dysk: %s | Kontenery: %d\n",
-				metrics.CPUUsage, metrics.RAMUsage, metrics.DiskHealth, len(metrics.Dockers))
+				   metrics.CPUUsage, metrics.RAMUsage, metrics.DiskHealth, len(metrics.Dockers))
 			mResp.Body.Close()
 		}
 
